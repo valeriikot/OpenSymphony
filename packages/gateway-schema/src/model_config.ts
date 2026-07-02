@@ -16,6 +16,7 @@ export type CredentialStorage =
 export type ModelHarnessKind =
   | "openhands_agent_server"
   | "codex_app_server"
+  | "claude_code"
   | "rust_native"
   | (string & {});
 

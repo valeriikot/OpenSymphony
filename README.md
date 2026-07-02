@@ -1,8 +1,8 @@
 # OpenSymphony
 
-OpenSymphony is a Rust implementation of the [OpenAI Symphony](https://github.com/openai/symphony) specification for orchestrating AI coding agents. It connects to [Linear](https://linear.app) or [Jira](https://www.atlassian.com/software/jira) for issue tracking and can run issues through either the managed [OpenHands](https://github.com/OpenHands/OpenHands) agent-server or the local Codex app-server harness.
+OpenSymphony is a Rust implementation of the [OpenAI Symphony](https://github.com/openai/symphony) specification for orchestrating AI coding agents. It connects to [Linear](https://linear.app) or [Jira](https://www.atlassian.com/software/jira) for issue tracking and can run issues through the managed [OpenHands](https://github.com/OpenHands/OpenHands) agent-server, the local Codex app-server harness, or Anthropic's [Claude Code](https://claude.com/claude-code) CLI in headless mode.
 
-This fork ([valeriikot/OpenSymphony](https://github.com/valeriikot/OpenSymphony)) adds Jira tracker support on top of upstream; see [Install From This Fork](#install-from-this-fork) and [docs/jira.md](docs/jira.md).
+This fork ([valeriikot/OpenSymphony](https://github.com/valeriikot/OpenSymphony)) adds Jira tracker support and a Claude Code harness on top of upstream; see [Install From This Fork](#install-from-this-fork), [docs/jira.md](docs/jira.md), and [docs/claude-code-harness.md](docs/claude-code-harness.md).
 
 ![OpenSymphony desktop app showing the task graph, run detail, changed files, and diff inspector](docs/images/opensymphony-app.png)
 
@@ -12,7 +12,7 @@ OpenSymphony automates software development workflows by:
 
 1. **Polling the issue tracker** (Linear or Jira) for issues in active states (Todo, In Progress, etc.)
 2. **Creating isolated workspaces** for each issue with lifecycle hooks
-3. **Dispatching AI agents** via OpenHands or Codex to work on issues autonomously
+3. **Dispatching AI agents** via OpenHands, Codex, or Claude Code to work on issues autonomously
 4. **Managing retries, reconciliation, and cleanup** based on issue state changes
 5. **Providing a terminal UI** (FrankenTUI) for monitoring and operator control
 
@@ -24,7 +24,7 @@ OpenSymphony automates software development workflows by:
 - **GraphQL-only Linear integration**: Agent-side Linear reads and writes through checked-in helper/query assets
 - **Jira tracker support**: Run the orchestrator against Jira Cloud or Data Center with `tracker.kind: jira` (see [docs/jira.md](docs/jira.md))
 - **Conversation reuse policies**: Default per-issue reuse with optional fresh-per-run resets
-- **Harness selection**: Default OpenHands agent-server execution, plus local Codex app-server support for ChatGPT subscription-backed runs
+- **Harness selection**: Default OpenHands agent-server execution, plus local Codex app-server support for ChatGPT subscription-backed runs and a Claude Code CLI harness for Anthropic subscription or API-key runs
 - **Tree-sitter code intelligence**: Local AST parsing, symbols, diagnostics, and source-cited structural context for agents
 - **Local-first MVP**: Trusted-machine deployment with optional hosted mode
 
@@ -45,6 +45,7 @@ not separately published crates.
 - Linear API key or Jira API token (for tracker integration)
 - For OpenHands: Python 3.13.12 with `uv`, plus an LLM API key for an OpenAI-compatible/LiteLLM provider
 - For Codex: a Codex CLI with `app-server` support and a working ChatGPT login
+- For Claude Code: an installed Claude Code CLI with a working `claude` login or an `ANTHROPIC_API_KEY`
 
 For platform-specific Rust and Python/`uv` setup steps, see [Prerequisites](docs/prerequisites.md).
 
@@ -57,8 +58,8 @@ cargo install opensymphony
 ### Install From This Fork
 
 The crates.io package tracks upstream. To get the features in this fork
-(such as Jira tracker support), install straight from the fork's git
-repository:
+(such as Jira tracker support and the Claude Code harness), install straight
+from the fork's git repository:
 
 ```bash
 cargo install --git https://github.com/valeriikot/OpenSymphony --branch main opensymphony
@@ -98,6 +99,13 @@ For Codex runs, install or select a Codex CLI that supports app-server mode:
 codex --version
 codex app-server --help
 codex login status
+```
+
+For Claude Code runs, install the [Claude Code CLI](https://claude.com/claude-code) and verify it works headlessly:
+
+```bash
+claude --version
+claude -p "say hi" --output-format stream-json --verbose
 ```
 
 To refresh the installed CLI later, run:
@@ -175,6 +183,25 @@ export OPENSYMPHONY_CODEX_BIN="$(command -v codex)"
 Codex mode, OpenSymphony uses the operator-owned Codex CLI login; it does not
 need `LLM_MODEL`/`LLM_API_KEY`/`LLM_BASE_URL`, and it does not launch the
 managed OpenHands server for Codex-only routing.
+
+### Claude Code Runtime Environment
+
+For local Claude Code runs, authenticate the Claude Code CLI (`claude login`,
+or export `ANTHROPIC_API_KEY`), then select the harness:
+
+```bash
+export OPENSYMPHONY_HARNESS="claude_code"
+export OPENSYMPHONY_MODEL="claude-sonnet-5"            # optional
+export OPENSYMPHONY_CLAUDE_BIN="$(command -v claude)"  # optional when on PATH
+```
+
+Each issue run launches one headless session
+(`claude --print --output-format stream-json`) inside the issue workspace,
+streams its events into the orchestrator, and maps the terminal `result`
+event to the run outcome. Like Codex mode, Claude Code routing does not need
+`LLM_*` variables and does not launch the managed OpenHands server. See
+[Claude Code Harness](docs/claude-code-harness.md) for the full contract and
+current limitations.
 
 The model configuration panel in the alpha web and desktop shells records model
 strings, API-compatible endpoint metadata, subscription bootstrap metadata, and
@@ -317,8 +344,8 @@ flowchart TB
         orchestrator["Orchestrator Scheduler"]
         workspace["Workspace Manager"]
         control["Gateway + Control API<br/>GET /healthz, /api/v1/snapshot, /api/v1/capabilities"]
-        runtime["Harness Runtime Client<br/>OpenHands REST/WebSocket or Codex stdio"]
-        linear_read["Linear Read Adapter"]
+        runtime["Harness Runtime Client<br/>OpenHands REST/WebSocket, Codex stdio, or Claude Code stream-json"]
+        linear_read["Tracker Read Adapter<br/>Linear GraphQL or Jira REST"]
 
         orchestrator --> workspace
         orchestrator --> runtime
@@ -336,16 +363,19 @@ flowchart TB
         agent --> graphql
     end
 
-    linear["Linear"]
+    linear["Linear / Jira"]
     openhands["OpenHands Agent-Server"]
     codex["Codex App-Server"]
+    claude["Claude Code CLI"]
 
     operator --> control
     workspace --> issue_ws
     runtime --> openhands
     runtime --> codex
+    runtime --> claude
     openhands --> agent
     codex --> agent
+    claude --> agent
     linear_read -->|read issues| linear
     graphql -->|agent-side writes| linear
 ```
@@ -359,8 +389,10 @@ installable crates.io package:
 |-----------|----------------|
 | `opensymphony_orchestrator` | Poll loop, scheduling, retries, state machine |
 | `opensymphony_linear` | GraphQL client for orchestrator-side Linear reads |
+| `opensymphony_jira` | REST client for orchestrator-side Jira reads |
 | `opensymphony_memory` | Issue capsules, DuckDB memory index, docs sync, archive eligibility |
 | `opensymphony_openhands` | REST/WebSocket client for agent runtime |
+| `opensymphony_claude` | Claude Code CLI headless harness adapter |
 | `opensymphony_workspace` | Workspace lifecycle, hooks, containment |
 | `opensymphony_control` | Control plane API and snapshot derivation |
 | `opensymphony_tui` | FrankenTUI operator client |
@@ -500,6 +532,7 @@ OPENSYMPHONY_LIVE_OPENHANDS=1 ./scripts/live_e2e.sh
 - [Architecture](docs/architecture.md) - High-level design and component interactions
 - [Configuration](docs/configuration.md) - Target repo bootstrap and runtime config
 - [Jira Tracker](docs/jira.md) - Jira configuration, credentials, and current scope
+- [Claude Code Harness](docs/claude-code-harness.md) - Headless Claude Code CLI harness contract and limitations
 - [Deployment Modes](docs/deployment-modes.md) - Local vs hosted deployment
 - [Installer and Distribution Strategy](docs/installer-and-distribution.md) - Future signed installer shape and DuckDB packaging boundaries
 - [Operations](docs/operations.md) - Doctor, rehydration, diagnostics, and local ops

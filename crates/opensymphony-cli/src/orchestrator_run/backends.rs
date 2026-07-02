@@ -8,6 +8,10 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
+use crate::opensymphony_claude::{
+    CLAUDE_CODE_CONTRACT, CLAUDE_CODE_KIND, ClaudeCodeLaunch, NormalizedClaudeEvent,
+    claude_event_summary, normalize_stream_event,
+};
 use crate::opensymphony_codex::{
     CODEX_APP_SERVER_CONTRACT, CODEX_APP_SERVER_KIND, CodexAppServerAdapter,
     CodexAppServerSchemaValidator, CodexContractGeneration, CodexJsonRpcSession,
@@ -68,6 +72,10 @@ const CODEX_SCHEMA_GENERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const CODEX_TERMINAL_TIMEOUT: Duration = Duration::from_secs(300);
 const CODEX_STDERR_TAIL_LINES: usize = 20;
 const CODEX_SCHEMA_STDERR_PREVIEW_CHARS: usize = 500;
+const CLAUDE_WORKER_LAUNCH_TIMEOUT: Duration = Duration::from_secs(75);
+// Headless Claude Code sessions emit an event per agent step, but one long
+// tool execution can stay silent for minutes, so the idle window is generous.
+const CLAUDE_EVENT_TIMEOUT: Duration = Duration::from_secs(900);
 const OPENHANDS_AGENT_SERVER_KIND: &str = "openhands_agent_server";
 
 #[derive(Debug, Error)]
@@ -229,6 +237,8 @@ pub(super) struct RuntimeWorkerBackend {
     codex_bin: String,
     codex_schema_validators: CodexSchemaValidatorCache,
     codex_interrupts: CodexInterruptRegistry,
+    claude_bin: String,
+    claude_interrupts: ClaudeInterruptRegistry,
     launch_timeout: Duration,
     updates_tx: mpsc::UnboundedSender<WorkerUpdate>,
     updates_rx: mpsc::UnboundedReceiver<WorkerUpdate>,
@@ -238,6 +248,9 @@ pub(super) struct RuntimeWorkerBackend {
 type CodexSchemaValidatorCache = Arc<AsyncMutex<HashMap<String, CodexAppServerSchemaValidator>>>;
 type CodexInterruptRegistry = Arc<Mutex<HashMap<String, Arc<AsyncMutex<CodexInterruptChannel>>>>>;
 type CodexInterruptResponseRegistry = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<(), String>>>>>;
+// Headless Claude Code sessions expose no in-band cancellation contract, so an
+// interrupt is a request to terminate the session process.
+type ClaudeInterruptRegistry = Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>;
 
 struct ActiveWorkerTask {
     handle: JoinHandle<()>,
@@ -973,6 +986,8 @@ impl RuntimeWorkerBackend {
             codex_bin: env::var("OPENSYMPHONY_CODEX_BIN").unwrap_or_else(|_| "codex".into()),
             codex_schema_validators: Arc::new(AsyncMutex::new(HashMap::new())),
             codex_interrupts: Arc::new(Mutex::new(HashMap::new())),
+            claude_bin: env::var("OPENSYMPHONY_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
+            claude_interrupts: Arc::new(Mutex::new(HashMap::new())),
             launch_timeout: DEFAULT_WORKER_LAUNCH_TIMEOUT,
             updates_tx,
             updates_rx,
@@ -1026,6 +1041,8 @@ impl RuntimeWorkerBackend {
         let worker_env = self.worker_env.clone();
         let codex_schema_validators = Arc::clone(&self.codex_schema_validators);
         let codex_interrupts = Arc::clone(&self.codex_interrupts);
+        let claude_bin = self.claude_bin.clone();
+        let claude_interrupts = Arc::clone(&self.claude_interrupts);
         let issue = request.issue.clone();
         let launch_worker_id = worker_id.clone();
         let handle = tokio::spawn(async move {
@@ -1084,6 +1101,29 @@ impl RuntimeWorkerBackend {
                     }),
                     finish_error.map(|error| error.to_string()),
                 );
+                let _ = updates_tx.send(WorkerUpdate::Finished {
+                    worker_id: finished_worker_id.clone(),
+                    outcome,
+                });
+                return;
+            }
+
+            if route.harness_kind == CLAUDE_CODE_KIND {
+                let outcome = run_claude_code_issue(
+                    &route,
+                    &workspace_manager,
+                    &ensured.handle,
+                    &mut run_manifest,
+                    &issue,
+                    &run,
+                    &workflow,
+                    &claude_bin,
+                    &claude_interrupts,
+                    &updates_tx,
+                    &mut launch_tx,
+                    &worker_env,
+                )
+                .await;
                 let _ = updates_tx.send(WorkerUpdate::Finished {
                     worker_id: finished_worker_id.clone(),
                     outcome,
@@ -1211,6 +1251,8 @@ impl RuntimeWorkerBackend {
     ) -> Duration {
         if route.harness_kind == "codex_app_server" {
             CODEX_WORKER_LAUNCH_TIMEOUT
+        } else if route.harness_kind == CLAUDE_CODE_KIND {
+            CLAUDE_WORKER_LAUNCH_TIMEOUT
         } else {
             self.launch_timeout
         }
@@ -1322,6 +1364,498 @@ fn memory_access_from_runtime(memory: &RuntimeMemoryEnv) -> MemoryWorkerAccess {
 impl Drop for RuntimeWorkerBackend {
     fn drop(&mut self) {
         self.abort_all_tracked_tasks();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_claude_code_issue(
+    route: &crate::opensymphony_orchestrator::HarnessRouteDecision,
+    workspace_manager: &WorkspaceManager,
+    workspace: &WorkspaceHandle,
+    run_manifest: &mut RunManifest,
+    issue: &NormalizedIssue,
+    run: &crate::opensymphony_domain::RunAttempt,
+    workflow: &ResolvedWorkflow,
+    claude_bin: &str,
+    claude_interrupts: &ClaudeInterruptRegistry,
+    updates_tx: &mpsc::UnboundedSender<WorkerUpdate>,
+    launch_tx: &mut Option<oneshot::Sender<LaunchReport>>,
+    worker_env: &BTreeMap<String, String>,
+) -> WorkerOutcomeRecord {
+    match try_run_claude_code_issue(
+        route,
+        workspace_manager,
+        workspace,
+        issue,
+        run,
+        workflow,
+        claude_bin,
+        claude_interrupts,
+        updates_tx,
+        launch_tx,
+        worker_env,
+    )
+    .await
+    {
+        Ok((outcome, status)) => {
+            match finish_claude_workspace_run(workspace_manager, workspace, run_manifest, status)
+                .await
+            {
+                Ok(()) => outcome,
+                Err(error) => {
+                    let detail = record_claude_finish_failure(
+                        workspace_manager,
+                        workspace,
+                        run_manifest,
+                        status,
+                        error,
+                    )
+                    .await;
+                    WorkerOutcomeRecord::from_run(
+                        run,
+                        WorkerOutcomeKind::Failed,
+                        now_timestamp(),
+                        Some("Claude Code workspace finalization failed".into()),
+                        Some(detail),
+                    )
+                }
+            }
+        }
+        Err(error) => {
+            let mut detail = error.clone();
+            if let Err(finish_error) = finish_claude_workspace_run(
+                workspace_manager,
+                workspace,
+                run_manifest,
+                RunStatus::Failed,
+            )
+            .await
+            {
+                let finish_detail = record_claude_finish_failure(
+                    workspace_manager,
+                    workspace,
+                    run_manifest,
+                    RunStatus::Failed,
+                    finish_error,
+                )
+                .await;
+                detail = format!("{detail}; {finish_detail}");
+            }
+            if launch_tx.is_some() {
+                report_launch_failure(launch_tx, detail.clone());
+            }
+            WorkerOutcomeRecord::from_run(
+                run,
+                WorkerOutcomeKind::Failed,
+                now_timestamp(),
+                Some("Claude Code worker failed".into()),
+                Some(detail),
+            )
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn try_run_claude_code_issue(
+    route: &crate::opensymphony_orchestrator::HarnessRouteDecision,
+    workspace_manager: &WorkspaceManager,
+    workspace: &WorkspaceHandle,
+    issue: &NormalizedIssue,
+    run: &crate::opensymphony_domain::RunAttempt,
+    workflow: &ResolvedWorkflow,
+    claude_bin: &str,
+    claude_interrupts: &ClaudeInterruptRegistry,
+    updates_tx: &mpsc::UnboundedSender<WorkerUpdate>,
+    launch_tx: &mut Option<oneshot::Sender<LaunchReport>>,
+    worker_env: &BTreeMap<String, String>,
+) -> Result<(WorkerOutcomeRecord, RunStatus), String> {
+    let prompt = workflow
+        .render_prompt(issue, run.attempt.map(|attempt| attempt.get()))
+        .map_err(|source| {
+            format!("failed to render workflow prompt for Claude Code route: {source}")
+        })?;
+    let launch = ClaudeCodeLaunch::new(claude_bin).with_model(route.model.clone());
+    let (program, args) = launch.to_command();
+    let mut child = Command::new(&program)
+        .args(&args)
+        .current_dir(workspace.workspace_path())
+        .envs(worker_env)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|source| format!("failed to launch `{program} {}`: {source}", args.join(" ")))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or("Claude Code child stdin missing")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Claude Code child stdout missing")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Claude Code child stderr missing")?;
+    let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
+    let mut stderr_task = AbortOnDrop::new(tokio::spawn(drain_claude_stderr(
+        stderr,
+        run.worker_id.to_string(),
+        Arc::clone(&stderr_tail),
+    )));
+
+    stdin
+        .write_all(prompt.as_bytes())
+        .await
+        .map_err(|source| format!("failed to write prompt to Claude Code stdin: {source}"))?;
+    stdin
+        .shutdown()
+        .await
+        .map_err(|source| format!("failed to close Claude Code stdin: {source}"))?;
+    drop(stdin);
+
+    let mut reader = BufReader::new(stdout).lines();
+    let interrupt_notify = Arc::new(tokio::sync::Notify::new());
+    let mut interrupt_registration: Option<ClaudeInterruptRegistration> = None;
+    let mut session_id: Option<String> = None;
+
+    loop {
+        let next_line = tokio::select! {
+            _ = interrupt_notify.notified() => {
+                let _ = child.kill().await;
+                stderr_task.abort();
+                return Ok((
+                    WorkerOutcomeRecord::from_run(
+                        run,
+                        WorkerOutcomeKind::Cancelled,
+                        now_timestamp(),
+                        Some("Claude Code session interrupted by scheduler".into()),
+                        None,
+                    ),
+                    RunStatus::Cancelled,
+                ));
+            }
+            line = timeout(CLAUDE_EVENT_TIMEOUT, reader.next_line()) => line,
+        };
+        let line = next_line
+            .map_err(|_| {
+                with_claude_stderr(
+                    "timed out waiting for Claude Code stream events".to_string(),
+                    &stderr_tail,
+                )
+            })?
+            .map_err(|source| {
+                with_claude_stderr(
+                    format!("failed reading Claude Code stdout: {source}"),
+                    &stderr_tail,
+                )
+            })?
+            .ok_or_else(|| {
+                with_claude_stderr(
+                    "Claude Code stdout closed before a result event".to_string(),
+                    &stderr_tail,
+                )
+            })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(&line).map_err(|source| {
+            with_claude_stderr(
+                format!("invalid Claude Code stream JSON: {source}"),
+                &stderr_tail,
+            )
+        })?;
+        let Some(event) = normalize_stream_event(value) else {
+            continue;
+        };
+        emit_claude_event(updates_tx, &run.worker_id.to_string(), &event);
+
+        if session_id.is_none()
+            && let Some(current_session) = event.session_id.clone()
+        {
+            write_claude_conversation_manifest(
+                workspace_manager,
+                workspace,
+                issue,
+                &current_session,
+                route,
+            )
+            .await
+            .map_err(|error| with_claude_stderr(error, &stderr_tail))?;
+            interrupt_registration = Some(register_claude_interrupt_channel(
+                claude_interrupts,
+                current_session.clone(),
+                Arc::clone(&interrupt_notify),
+            )?);
+            if let Some(sender) = launch_tx.take() {
+                let _ = sender.send(LaunchReport::Conversation(Box::new(
+                    claude_conversation_metadata(current_session.clone(), route),
+                )));
+            }
+            session_id = Some(current_session);
+        }
+
+        if event.is_terminal() {
+            let (outcome, status) = claude_terminal_outcome(&event);
+            let summary = claude_event_summary(&event);
+            let _ = child.kill().await;
+            stderr_task.abort();
+            drop(interrupt_registration);
+            return Ok((
+                WorkerOutcomeRecord::from_run(run, outcome, now_timestamp(), Some(summary), None),
+                status,
+            ));
+        }
+    }
+}
+
+fn claude_terminal_outcome(event: &NormalizedClaudeEvent) -> (WorkerOutcomeKind, RunStatus) {
+    if event.result_is_error() {
+        return (WorkerOutcomeKind::Failed, RunStatus::Failed);
+    }
+    match event.result_subtype() {
+        Some("success") | None => (WorkerOutcomeKind::Succeeded, RunStatus::Succeeded),
+        Some(subtype) if subtype.starts_with("error") => {
+            (WorkerOutcomeKind::Failed, RunStatus::Failed)
+        }
+        Some(_) => (WorkerOutcomeKind::Succeeded, RunStatus::Succeeded),
+    }
+}
+
+fn emit_claude_event(
+    updates_tx: &mpsc::UnboundedSender<WorkerUpdate>,
+    worker_id: &str,
+    event: &NormalizedClaudeEvent,
+) {
+    let Ok(worker_id) = crate::opensymphony_domain::WorkerId::new(worker_id.to_string()) else {
+        return;
+    };
+    let observed_at = now_timestamp();
+    let _ = updates_tx.send(WorkerUpdate::RuntimeEvent {
+        worker_id: worker_id.clone(),
+        observed_at,
+        event_id: event.event_id.clone(),
+        event_kind: Some(format!("claude.{}", event.event_type)),
+        summary: Some(claude_event_summary(event)),
+        payload: Some(event.raw.clone()),
+    });
+    if let Some(usage) = event.token_usage {
+        let _ = updates_tx.send(WorkerUpdate::TokenUsageUpdate {
+            worker_id,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            total_tokens: usage.total_tokens,
+        });
+    }
+}
+
+struct ClaudeInterruptRegistration {
+    registry: ClaudeInterruptRegistry,
+    session_id: String,
+}
+
+impl Drop for ClaudeInterruptRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.remove(&self.session_id);
+        }
+    }
+}
+
+fn register_claude_interrupt_channel(
+    registry: &ClaudeInterruptRegistry,
+    session_id: String,
+    notify: Arc<tokio::sync::Notify>,
+) -> Result<ClaudeInterruptRegistration, String> {
+    registry
+        .lock()
+        .map_err(|_| "Claude Code interrupt registry lock poisoned".to_string())?
+        .insert(session_id.clone(), notify);
+    Ok(ClaudeInterruptRegistration {
+        registry: Arc::clone(registry),
+        session_id,
+    })
+}
+
+fn send_claude_code_interrupt(
+    registry: &ClaudeInterruptRegistry,
+    command: &crate::opensymphony_domain::HarnessInterruptCommand,
+) -> Result<WorkerInterruptAcknowledgement, CliWorkerError> {
+    let session_id = command.conversation_id.as_str();
+    let notify = registry
+        .lock()
+        .map_err(|_| {
+            CliWorkerError::InterruptFailed(
+                "Claude Code interrupt registry lock poisoned".to_string(),
+            )
+        })?
+        .get(session_id)
+        .cloned();
+    let Some(notify) = notify else {
+        return Err(CliWorkerError::InterruptFailed(format!(
+            "Claude Code worker for session `{session_id}` does not have an active interrupt channel"
+        )));
+    };
+    notify.notify_one();
+    Ok(WorkerInterruptAcknowledgement {
+        accepted: true,
+        detail: Some(format!(
+            "Claude Code interrupt requested; headless session `{session_id}` will be terminated"
+        )),
+    })
+}
+
+async fn drain_claude_stderr(
+    stderr: ChildStderr,
+    worker_id: String,
+    tail: Arc<Mutex<VecDeque<String>>>,
+) {
+    let mut lines = BufReader::new(stderr).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                push_codex_stderr_tail(&tail, line.clone());
+                tracing::debug!(%worker_id, stderr = %line, "Claude Code stderr");
+            }
+            Ok(None) => break,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "failed to drain Claude Code stderr");
+                break;
+            }
+        }
+    }
+}
+
+fn with_claude_stderr(error: String, tail: &Arc<Mutex<VecDeque<String>>>) -> String {
+    let Ok(tail) = tail.lock() else {
+        return error;
+    };
+    if tail.is_empty() {
+        return error;
+    }
+    format!(
+        "{error}; Claude Code emitted {} recent stderr line(s); raw stderr is kept in debug logs only",
+        tail.len()
+    )
+}
+
+async fn finish_claude_workspace_run(
+    workspace_manager: &WorkspaceManager,
+    workspace: &WorkspaceHandle,
+    run_manifest: &mut RunManifest,
+    status: RunStatus,
+) -> Result<(), WorkspaceError> {
+    run_manifest.status = status;
+    run_manifest.status_detail = Some(format!("Claude Code route ended with {status}"));
+    workspace_manager
+        .finish_run(workspace, run_manifest, status)
+        .await
+}
+
+async fn record_claude_finish_failure(
+    workspace_manager: &WorkspaceManager,
+    workspace: &WorkspaceHandle,
+    run_manifest: &mut RunManifest,
+    attempted_status: RunStatus,
+    error: WorkspaceError,
+) -> String {
+    let detail =
+        format!("failed to finish Claude Code workspace run as {attempted_status}: {error}");
+    run_manifest.status = RunStatus::Failed;
+    run_manifest.status_detail = Some(format!(
+        "Claude Code workspace finalization failed after {attempted_status}"
+    ));
+    if let Err(failed_error) = workspace_manager
+        .finish_run(workspace, run_manifest, RunStatus::Failed)
+        .await
+    {
+        return format!("{detail}; additionally failed to persist failed status: {failed_error}");
+    }
+    detail
+}
+
+async fn write_claude_conversation_manifest(
+    workspace_manager: &WorkspaceManager,
+    workspace: &WorkspaceHandle,
+    issue: &NormalizedIssue,
+    session_id: &str,
+    route: &crate::opensymphony_orchestrator::HarnessRouteDecision,
+) -> Result<(), String> {
+    let now = chrono::Utc::now();
+    let conversation_id = ConversationId::new(session_id.to_string()).map_err(|error| {
+        format!("invalid Claude Code session id for conversation manifest: {error}")
+    })?;
+    let manifest = IssueConversationManifest {
+        issue_id: issue.id.clone(),
+        identifier: issue.identifier.clone(),
+        conversation_id,
+        reuse_policy: "fresh_per_run".to_string(),
+        server_base_url: None,
+        transport_target: Some(CLAUDE_CODE_KIND.to_string()),
+        http_auth_mode: None,
+        websocket_auth_mode: None,
+        websocket_query_param_name: None,
+        persistence_dir: workspace.metadata_dir(),
+        created_at: now,
+        updated_at: now,
+        last_attached_at: now,
+        launch_profile: None,
+        llm_config_fingerprint: None,
+        fresh_conversation: true,
+        workflow_prompt_seeded: true,
+        reset_reason: None,
+        runtime_contract_version: Some(CLAUDE_CODE_CONTRACT.to_string()),
+        last_prompt_kind: Some(IssueSessionPromptKind::Full),
+        last_prompt_at: Some(now),
+        last_prompt_path: None,
+        last_execution_status: None,
+        last_event_id: None,
+        last_event_kind: Some("session/start".into()),
+        last_event_at: Some(now),
+        last_event_summary: Some(route.summary()),
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        last_token_accumulation_at: None,
+    };
+    workspace_manager
+        .write_json_artifact(
+            workspace,
+            &workspace.conversation_manifest_path(),
+            &manifest,
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn claude_conversation_metadata(
+    conversation_id: String,
+    route: &crate::opensymphony_orchestrator::HarnessRouteDecision,
+) -> ConversationMetadata {
+    ConversationMetadata {
+        conversation_id: ConversationId::new(conversation_id)
+            .expect("Claude Code session id should not be empty"),
+        server_base_url: None,
+        transport_target: Some(route.harness_kind.clone()),
+        http_auth_mode: None,
+        websocket_auth_mode: None,
+        websocket_query_param_name: None,
+        fresh_conversation: true,
+        runtime_contract_version: Some(CLAUDE_CODE_CONTRACT.into()),
+        stream_state: RuntimeStreamState::Closed,
+        last_event_id: None,
+        last_event_kind: None,
+        last_event_at: None,
+        last_event_summary: Some(route.summary()),
+        recent_activity: Vec::new(),
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 0,
+        runtime_seconds: 0,
+        next_activity_sequence: 0,
     }
 }
 
@@ -2576,6 +3110,9 @@ impl WorkerBackend for RuntimeWorkerBackend {
     ) -> Result<WorkerInterruptAcknowledgement, Self::Error> {
         if command.harness_kind == CODEX_APP_SERVER_KIND {
             return send_codex_stdio_interrupt(&self.codex_interrupts, &command).await;
+        }
+        if command.harness_kind == CLAUDE_CODE_KIND {
+            return send_claude_code_interrupt(&self.claude_interrupts, &command);
         }
         if command.harness_kind != OPENHANDS_AGENT_SERVER_KIND {
             return Err(CliWorkerError::InterruptFailed(format!(

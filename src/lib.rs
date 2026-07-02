@@ -1,3 +1,5 @@
+#[path = "../crates/opensymphony-claude/src/lib.rs"]
+pub mod opensymphony_claude;
 #[path = "../crates/opensymphony-cli/src/lib.rs"]
 pub mod opensymphony_cli;
 #[path = "../crates/opensymphony-code-intel/src/lib.rs"]
