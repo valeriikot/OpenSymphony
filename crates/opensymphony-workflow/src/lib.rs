@@ -439,6 +439,63 @@ tracker:
     }
 
     #[test]
+    fn tracker_kind_is_required() {
+        let workflow = WorkflowDefinition::parse(
+            r#"---
+tracker:
+  project_slug: sample-project
+  active_states:
+    - Todo
+  terminal_states:
+    - Done
+---
+{{ issue.identifier }}
+"#,
+        )
+        .expect("workflow should parse");
+        let env = env([("LINEAR_API_KEY", "linear-token")]);
+
+        let error = workflow
+            .resolve(Path::new("/repo"), &env)
+            .expect_err("omitted tracker.kind must fail instead of defaulting");
+
+        assert!(matches!(
+            error,
+            WorkflowConfigError::MissingRequiredField {
+                field: "tracker.kind"
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_tracker_kinds_other_than_linear_and_jira() {
+        let workflow = WorkflowDefinition::parse(
+            r#"---
+tracker:
+  kind: github
+  project_slug: sample-project
+  active_states:
+    - Todo
+  terminal_states:
+    - Done
+---
+{{ issue.identifier }}
+"#,
+        )
+        .expect("workflow should parse");
+        let env = env([]);
+
+        let error = workflow
+            .resolve(Path::new("/repo"), &env)
+            .expect_err("only linear and jira tracker kinds are supported");
+
+        assert!(matches!(
+            error,
+            WorkflowConfigError::UnsupportedTrackerKind { kind } if kind == "github"
+        ));
+    }
+
+    #[test]
     fn linear_tracker_leaves_auth_email_unset() {
         let workflow = WorkflowDefinition::parse(
             r#"---
@@ -2546,6 +2603,40 @@ agent:
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn accepts_claude_code_routing_harness() {
+        let workflow = WorkflowDefinition::parse(
+            r#"---
+tracker:
+  kind: linear
+  project_slug: sample-project
+  active_states:
+    - Todo
+  terminal_states:
+    - Done
+routing:
+  harness: claude_code
+  model: claude-sonnet-5
+---
+{{ issue.identifier }}
+"#,
+        )
+        .expect("workflow should parse");
+        let env = env([("LINEAR_API_KEY", "linear-token")]);
+
+        let resolved = workflow
+            .resolve(Path::new("/repo"), &env)
+            .expect("claude_code routing should resolve");
+
+        assert_eq!(resolved.config.routing.harness, "claude_code");
+        assert_eq!(
+            resolved.config.routing.model.as_deref(),
+            Some("claude-sonnet-5")
+        );
+        // Non-default harnesses leave the OpenHands extension inactive.
+        assert!(!resolved.extensions.openhands.local_server.enabled);
     }
 
     #[test]

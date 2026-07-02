@@ -112,6 +112,7 @@ Preferred crate and trait boundaries:
 - `opensymphony-jira`
 - `opensymphony-openhands`
 - `opensymphony-codex`
+- `opensymphony-claude`
 - `opensymphony-orchestrator`
 - `opensymphony-control`
 - `opensymphony-cli`

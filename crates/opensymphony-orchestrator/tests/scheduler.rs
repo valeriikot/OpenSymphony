@@ -168,6 +168,22 @@ fn selected_route_uses_configured_codex_harness_and_model() {
 }
 
 #[test]
+fn selected_route_uses_configured_claude_code_harness_and_model() {
+    let issue = normalized_issue("lin-432", "COE-432", "In Progress");
+    let mut config = scheduler_config();
+    config.routing.harness = "claude_code".into();
+    config.routing.model = Some("claude-sonnet-5".into());
+    config.routing.dry_run = true;
+
+    let route = decide_issue_route(&issue, &config).expect("route should resolve");
+
+    assert_eq!(route.harness_kind, "claude_code");
+    assert_eq!(route.model.as_deref(), Some("claude-sonnet-5"));
+    assert!(route.dry_run);
+    assert!(route.reason.contains("workflow routing.harness"));
+}
+
+#[test]
 fn selected_route_rejects_unavailable_harness() {
     let issue = normalized_issue("lin-430", "COE-430", "In Progress");
     let mut config = scheduler_config();

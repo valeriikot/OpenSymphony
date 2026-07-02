@@ -127,13 +127,15 @@ pub struct HarnessHistoryCapability {
 pub enum HarnessKind {
     OpenHandsAgentServer,
     CodexAppServer,
+    ClaudeCode,
     RustNative,
 }
 
 impl HarnessKind {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::OpenHandsAgentServer,
         Self::CodexAppServer,
+        Self::ClaudeCode,
         Self::RustNative,
     ];
 
@@ -141,6 +143,7 @@ impl HarnessKind {
         match value {
             "openhands_agent_server" => Some(Self::OpenHandsAgentServer),
             "codex_app_server" => Some(Self::CodexAppServer),
+            "claude_code" => Some(Self::ClaudeCode),
             "rust_native" => Some(Self::RustNative),
             _ => None,
         }
@@ -150,6 +153,7 @@ impl HarnessKind {
         match self {
             Self::OpenHandsAgentServer => "openhands_agent_server",
             Self::CodexAppServer => "codex_app_server",
+            Self::ClaudeCode => "claude_code",
             Self::RustNative => "rust_native",
         }
     }
@@ -162,6 +166,7 @@ impl HarnessKind {
         match self {
             Self::OpenHandsAgentServer => HarnessCapability::openhands_agent_server(),
             Self::CodexAppServer => HarnessCapability::codex_app_server_local(),
+            Self::ClaudeCode => HarnessCapability::claude_code_local(),
             Self::RustNative => HarnessCapability::rust_native_future(),
         }
     }
@@ -318,6 +323,77 @@ impl HarnessCapability {
                     .into(),
                 "Loopback WebSocket mode remains benchmark-only until exposure and auth policy are hardened."
                     .into(),
+            ],
+        }
+    }
+
+    pub fn claude_code_local() -> Self {
+        Self {
+            kind: "claude_code".into(),
+            display_name: "Claude Code CLI".into(),
+            available: true,
+            adapter_contract_version: "harness-adapter-v1".into(),
+            runtime_contract_version: Some("claude-code-stream-json-v1".into()),
+            actions: HarnessActionCapability {
+                start_run: true,
+                send_user_message: false,
+                retry: true,
+                cancel: true,
+                pause: false,
+                resume: false,
+                approve: false,
+                reject: false,
+                comment: false,
+            },
+            event_streams: HarnessEventStreamCapability {
+                runtime_events: true,
+                terminal_frames: false,
+                replay_from_cursor: false,
+                raw_payload_refs: true,
+                delivery_modes: vec!["stream_json".into()],
+            },
+            approvals: HarnessApprovalCapability {
+                tool_approval: false,
+                human_decision: false,
+                policy_metadata: false,
+            },
+            model_settings: HarnessModelSettingsCapability {
+                api_compatible_settings: false,
+                subscription_credentials: true,
+                per_run_overrides: true,
+                credential_reference_kinds: vec!["claude_cli_login".into(), "env".into()],
+            },
+            transport: HarnessTransportCapability {
+                protocol: "stream_json".into(),
+                modes: vec!["stdio".into()],
+                local: true,
+                remote: false,
+            },
+            cancellation: HarnessCancellationCapability {
+                cancel_run: true,
+                force_stop: true,
+                acknowledges_cancel: false,
+            },
+            pause_resume: HarnessPauseResumeCapability {
+                pause: false,
+                resume: false,
+            },
+            history: HarnessHistoryCapability {
+                fetch_history: false,
+                reconcile_after_ready: false,
+                reconnect_and_replay: false,
+                preserve_unknown_events: true,
+            },
+            notes: vec![
+                "Local adapter path using `claude --print --output-format stream-json` headless sessions.".into(),
+                "Requires an installed Claude Code CLI with a working `claude` login or ANTHROPIC_API_KEY available to the worker environment.".into(),
+                "Each issue run is a single non-interactive session; permission prompts are bypassed inside the isolated workspace.".into(),
+            ],
+            feature_gaps: vec![
+                "Claude Code issue execution is local-stdio alpha and requires explicit harness selection.".into(),
+                "Interrupts terminate the headless session process; there is no graceful in-turn cancellation contract.".into(),
+                "Mid-session user messages, approvals, history fetch, and replay cursors are not exposed by the headless stream-json contract.".into(),
+                "Hosted Claude worker pools and remote transport remain out of scope for the local adapter.".into(),
             ],
         }
     }

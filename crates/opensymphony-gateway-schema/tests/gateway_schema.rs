@@ -795,19 +795,25 @@ fn harness_capability_roundtrips_future_adapters() {
     let caps = vec![
         HarnessCapability::openhands_agent_server(),
         HarnessCapability::codex_app_server_local(),
+        HarnessCapability::claude_code_local(),
         HarnessCapability::rust_native_future(),
     ];
 
     let json = must_serialize(&caps);
     let back: Vec<HarnessCapability> = must_deserialize(&json);
 
-    assert_eq!(back.len(), 3);
+    assert_eq!(back.len(), 4);
     assert!(back[0].available);
     assert_eq!(back[1].kind, "codex_app_server");
     assert_eq!(back[1].transport.protocol, "json_rpc_2_0");
     assert!(!back[1].actions.approve);
     assert!(!back[1].actions.reject);
     assert!(back[1].approvals.tool_approval);
+    assert_eq!(back[2].kind, "claude_code");
+    assert!(back[2].available);
+    assert!(back[2].actions.start_run);
+    assert_eq!(back[2].transport.protocol, "stream_json");
+    assert!(back[2].cancellation.cancel_run);
     assert!(
         back[1]
             .model_settings
@@ -833,8 +839,8 @@ fn harness_capability_roundtrips_future_adapters() {
             .iter()
             .any(|gap| gap.contains("Hosted Codex worker pools"))
     );
-    assert_eq!(back[2].kind, "rust_native");
-    assert!(back[2].pause_resume.pause);
+    assert_eq!(back[3].kind, "rust_native");
+    assert!(back[3].pause_resume.pause);
 }
 
 #[test]
