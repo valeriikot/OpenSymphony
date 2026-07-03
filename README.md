@@ -2,7 +2,7 @@
 
 OpenSymphony is a Rust implementation of the [OpenAI Symphony](https://github.com/openai/symphony) specification for orchestrating AI coding agents. It connects to [Linear](https://linear.app) or [Jira](https://www.atlassian.com/software/jira) for issue tracking and can run issues through the managed [OpenHands](https://github.com/OpenHands/OpenHands) agent-server, the local Codex app-server harness, or Anthropic's [Claude Code](https://claude.com/claude-code) CLI in headless mode.
 
-This fork ([valeriikot/OpenSymphony](https://github.com/valeriikot/OpenSymphony)) adds Jira tracker support and a Claude Code harness on top of upstream; see [Install From This Fork](#install-from-this-fork), [docs/jira.md](docs/jira.md), and [docs/claude-code-harness.md](docs/claude-code-harness.md).
+This fork ([valeriikot/OpenSymphony](https://github.com/valeriikot/OpenSymphony)) adds Jira tracker support and a Claude Code harness on top of upstream; see [Install From This Git Repository](#install-from-this-git-repository), [docs/jira.md](docs/jira.md), and [docs/claude-code-harness.md](docs/claude-code-harness.md).
 
 ![OpenSymphony desktop app showing the task graph, run detail, changed files, and diff inspector](docs/images/opensymphony-app.png)
 
@@ -55,21 +55,29 @@ For platform-specific Rust and Python/`uv` setup steps, see [Prerequisites](docs
 cargo install opensymphony
 ```
 
-### Install From This Fork
+### Install From This Git Repository
 
 The crates.io package tracks upstream. To get the features in this fork
 (such as Jira tracker support and the Claude Code harness), install straight
-from the fork's git repository:
+from the git repository — Cargo clones and builds it for you:
 
 ```bash
 cargo install --git https://github.com/valeriikot/OpenSymphony --branch main opensymphony
 ```
 
 To install from a specific feature branch before it lands on `main`, pass its
-name instead:
+name instead. For example, the branch carrying both the Jira tracker and the
+Claude Code harness:
 
 ```bash
-cargo install --git https://github.com/valeriikot/OpenSymphony --branch claude/jira-support-integration-wbgstn opensymphony
+cargo install --git https://github.com/valeriikot/OpenSymphony --branch claude/claude-code-harness-support opensymphony
+```
+
+You can also pin an exact commit or tag instead of a branch:
+
+```bash
+cargo install --git https://github.com/valeriikot/OpenSymphony --rev <commit-sha> opensymphony
+cargo install --git https://github.com/valeriikot/OpenSymphony --tag <tag> opensymphony
 ```
 
 Or clone and build locally, which is the better path if you plan to modify the
@@ -78,14 +86,17 @@ code:
 ```bash
 git clone https://github.com/valeriikot/OpenSymphony.git
 cd OpenSymphony
+# optional: git checkout <branch>
 cargo install --path . --locked
 ```
 
-All variants produce the same `opensymphony` binary; `cargo install` replaces
-any previously installed version, and you can switch back to the upstream
-release at any time with `cargo install opensymphony --force`. The
-`opensymphony install openhands` / `opensymphony update` steps below work the
-same regardless of where the binary came from.
+All variants produce the same `opensymphony` binary in `~/.cargo/bin` (make
+sure it is on your `PATH`); check what you got with `opensymphony --version`.
+`cargo install` replaces any previously installed version — rerun the same
+command to pick up new commits from the branch — and you can switch back to
+the upstream release at any time with `cargo install opensymphony --force`.
+The `opensymphony install openhands` / `opensymphony update` steps below work
+the same regardless of where the binary came from.
 
 For OpenHands runs, install the pinned local OpenHands agent-server runtime:
 
