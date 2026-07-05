@@ -378,8 +378,17 @@ impl JiraClient {
             issues.extend(response.issues);
 
             match response.next_page_token {
-                Some(token) if fetched > 0 => next_page_token = Some(token),
-                _ => return Ok(issues),
+                Some(token) => {
+                    // The enhanced search endpoint may return a short or even
+                    // empty page while more results remain; keep following the
+                    // token. A repeated token would mean the server is not
+                    // advancing, so stop rather than spin forever.
+                    if fetched == 0 && next_page_token.as_deref() == Some(token.as_str()) {
+                        return Ok(issues);
+                    }
+                    next_page_token = Some(token);
+                }
+                None => return Ok(issues),
             }
         }
     }
@@ -490,9 +499,19 @@ impl JiraClient {
     }
 
     async fn sleep_before_retry(&self, error: &JiraError, attempt: usize) {
-        let delay = error
+        let mut delay = error
             .retry_after()
             .unwrap_or_else(|| self.exponential_backoff(attempt));
+        if !error.is_rate_limited() {
+            // Retry-After headers on transient 5xx responses can point up to
+            // an hour out; only rate-limited errors may honor them inline
+            // (bounded by should_retry's cap). Everything else stays within
+            // the configured backoff ceiling.
+            delay = delay.min(std::cmp::min(
+                self.config.retry_policy.max_backoff,
+                MAX_INLINE_RATE_LIMIT_RETRY,
+            ));
+        }
         debug!(
             attempt,
             delay_ms = delay.as_millis(),

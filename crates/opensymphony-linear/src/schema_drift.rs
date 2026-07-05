@@ -177,12 +177,12 @@ pub fn required_fields() -> &'static [RequiredField] {
             critical: true,
         },
         RequiredField {
-            type_name: "Label",
+            type_name: "IssueLabel",
             field_name: "id",
             critical: true,
         },
         RequiredField {
-            type_name: "Label",
+            type_name: "IssueLabel",
             field_name: "name",
             critical: true,
         },
@@ -262,6 +262,9 @@ query IntrospectType($typeName: String!) {
     fields(includeDeprecated: true) {
       name
     }
+    inputFields {
+      name
+    }
   }
 }
 "#;
@@ -318,7 +321,9 @@ impl LinearClient {
             .execute_graphql(INTROSPECT_TYPE_QUERY, json!({ "typeName": type_name }))
             .await?;
 
-        let type_node = response.get("data").and_then(|d| d.get("__type"));
+        // execute_graphql already unwraps the GraphQL `data` envelope, so the
+        // response root is the selection set itself.
+        let type_node = response.get("__type");
         match type_node {
             None | Some(serde_json::Value::Null) => {
                 return Err(LinearError::InvalidResponse(format!(
@@ -328,9 +333,15 @@ impl LinearClient {
             _ => {}
         }
 
+        // OBJECT types expose `fields`; INPUT_OBJECT types expose `inputFields`.
         let fields = type_node
             .and_then(|t| t.get("fields"))
             .and_then(|f| f.as_array())
+            .or_else(|| {
+                type_node
+                    .and_then(|t| t.get("inputFields"))
+                    .and_then(|f| f.as_array())
+            })
             .ok_or_else(|| {
                 LinearError::InvalidResponse(format!(
                     "Introspection for type `{type_name}` returned no fields"

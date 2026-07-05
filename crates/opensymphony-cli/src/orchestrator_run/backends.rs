@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::opensymphony_claude::{
-    CLAUDE_CODE_CONTRACT, CLAUDE_CODE_KIND, ClaudeCodeLaunch, NormalizedClaudeEvent,
-    claude_event_summary, normalize_stream_event,
+    CLAUDE_CODE_CONTRACT, CLAUDE_CODE_KIND, ClaudeCodeLaunch, ClaudeTokenUsage,
+    NormalizedClaudeEvent, NormalizedClaudeEventKind, claude_event_summary, normalize_stream_event,
 };
 use crate::opensymphony_codex::{
     CODEX_APP_SERVER_CONTRACT, CODEX_APP_SERVER_KIND, CodexAppServerAdapter,
@@ -944,7 +944,10 @@ fn conversation_metadata_from_manifest(
         input_tokens: manifest.input_tokens,
         output_tokens: manifest.output_tokens,
         cache_read_tokens: manifest.cache_read_tokens,
-        total_tokens: manifest.input_tokens.saturating_add(manifest.output_tokens),
+        total_tokens: manifest
+            .input_tokens
+            .saturating_add(manifest.output_tokens)
+            .saturating_add(manifest.cache_read_tokens),
         runtime_seconds: 0,
         next_activity_sequence: 0,
     }
@@ -983,10 +986,14 @@ impl RuntimeWorkerBackend {
                 .with_memory(memory_env.as_ref().map(memory_access_from_runtime)),
             workpad_comment_source,
             worker_env,
-            codex_bin: env::var("OPENSYMPHONY_CODEX_BIN").unwrap_or_else(|_| "codex".into()),
+            codex_bin: absolutize_harness_bin(
+                env::var("OPENSYMPHONY_CODEX_BIN").unwrap_or_else(|_| "codex".into()),
+            ),
             codex_schema_validators: Arc::new(AsyncMutex::new(HashMap::new())),
             codex_interrupts: Arc::new(Mutex::new(HashMap::new())),
-            claude_bin: env::var("OPENSYMPHONY_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
+            claude_bin: absolutize_harness_bin(
+                env::var("OPENSYMPHONY_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
+            ),
             claude_interrupts: Arc::new(Mutex::new(HashMap::new())),
             launch_timeout: DEFAULT_WORKER_LAUNCH_TIMEOUT,
             updates_tx,
@@ -1519,6 +1526,12 @@ async fn try_run_claude_code_issue(
     let interrupt_notify = Arc::new(tokio::sync::Notify::new());
     let mut interrupt_registration: Option<ClaudeInterruptRegistration> = None;
     let mut session_id: Option<String> = None;
+    let mut usage_totals = ClaudeTokenUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 0,
+    };
 
     loop {
         let next_line = tokio::select! {
@@ -1569,7 +1582,12 @@ async fn try_run_claude_code_issue(
         let Some(event) = normalize_stream_event(value) else {
             continue;
         };
-        emit_claude_event(updates_tx, &run.worker_id.to_string(), &event);
+        emit_claude_event(
+            updates_tx,
+            &run.worker_id.to_string(),
+            &event,
+            &mut usage_totals,
+        );
 
         if session_id.is_none()
             && let Some(current_session) = event.session_id.clone()
@@ -1602,6 +1620,17 @@ async fn try_run_claude_code_issue(
             let _ = child.kill().await;
             stderr_task.abort();
             drop(interrupt_registration);
+            if launch_tx.is_some() {
+                // No event carried a session id, so the scheduler was never
+                // told about a conversation; report the launch as failed with
+                // the real outcome instead of silently dropping the channel.
+                report_launch_failure(
+                    launch_tx,
+                    format!(
+                        "Claude Code session ended without reporting a session id; outcome: {summary}"
+                    ),
+                );
+            }
             return Ok((
                 WorkerOutcomeRecord::from_run(run, outcome, now_timestamp(), Some(summary), None),
                 status,
@@ -1627,6 +1656,7 @@ fn emit_claude_event(
     updates_tx: &mpsc::UnboundedSender<WorkerUpdate>,
     worker_id: &str,
     event: &NormalizedClaudeEvent,
+    usage_totals: &mut ClaudeTokenUsage,
 ) {
     let Ok(worker_id) = crate::opensymphony_domain::WorkerId::new(worker_id.to_string()) else {
         return;
@@ -1641,12 +1671,36 @@ fn emit_claude_event(
         payload: Some(event.raw.clone()),
     });
     if let Some(usage) = event.token_usage {
+        // The scheduler applies TokenUsageUpdate with set/overwrite semantics
+        // (sized for Codex's cumulative thread totals), while Claude assistant
+        // events carry per-message usage — so accumulate locally and always
+        // send running session totals. The terminal result event reports
+        // session-cumulative usage; take the field-wise max so totals never
+        // shrink regardless of which source counted more.
+        if event.kind == NormalizedClaudeEventKind::Result {
+            usage_totals.input_tokens = usage_totals.input_tokens.max(usage.input_tokens);
+            usage_totals.output_tokens = usage_totals.output_tokens.max(usage.output_tokens);
+            usage_totals.cache_read_tokens =
+                usage_totals.cache_read_tokens.max(usage.cache_read_tokens);
+            usage_totals.total_tokens = usage_totals.total_tokens.max(usage.total_tokens);
+        } else {
+            usage_totals.input_tokens =
+                usage_totals.input_tokens.saturating_add(usage.input_tokens);
+            usage_totals.output_tokens = usage_totals
+                .output_tokens
+                .saturating_add(usage.output_tokens);
+            usage_totals.cache_read_tokens = usage_totals
+                .cache_read_tokens
+                .saturating_add(usage.cache_read_tokens);
+            usage_totals.total_tokens =
+                usage_totals.total_tokens.saturating_add(usage.total_tokens);
+        }
         let _ = updates_tx.send(WorkerUpdate::TokenUsageUpdate {
             worker_id,
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_read_tokens: usage.cache_read_tokens,
-            total_tokens: usage.total_tokens,
+            input_tokens: usage_totals.input_tokens,
+            output_tokens: usage_totals.output_tokens,
+            cache_read_tokens: usage_totals.cache_read_tokens,
+            total_tokens: usage_totals.total_tokens,
         });
     }
 }
@@ -2185,6 +2239,22 @@ async fn codex_binary_fingerprint(codex_bin: &str) -> Option<String> {
     ))
 }
 
+/// Pins a relative harness binary path (e.g. `tools/codex`) to the
+/// orchestrator's working directory. Worker processes spawn with
+/// `current_dir(workspace)`, so a path left relative would resolve against
+/// the per-issue workspace instead of the directory the operator meant.
+/// Bare command names (no separator) are left for PATH lookup.
+fn absolutize_harness_bin(program: String) -> String {
+    let path = Path::new(&program);
+    if path.is_absolute() || !(program.contains('/') || program.contains('\\')) {
+        return program;
+    }
+    match env::current_dir() {
+        Ok(current_dir) => current_dir.join(path).display().to_string(),
+        Err(_) => program,
+    }
+}
+
 fn resolve_executable_path(program: &str) -> Option<PathBuf> {
     let path = Path::new(program);
     if path.is_absolute() || program.contains('/') || program.contains('\\') {
@@ -2666,14 +2736,25 @@ fn complete_codex_interrupt_response(
     let Some(response_id) = codex_response_id(value) else {
         return false;
     };
+    // Server-initiated requests also carry an id; they are not responses to
+    // our turn/interrupt, must not complete a waiter, and must not be
+    // swallowed from the notification stream.
+    if value.get("method").is_some() {
+        return false;
+    }
     let sender = responses
         .lock()
         .ok()
         .and_then(|mut responses| responses.remove(&response_id));
-    if let Some(sender) = sender {
-        let _ = sender.send(reject_codex_json_rpc_error(response_id, value));
+    match sender {
+        Some(sender) => {
+            let _ = sender.send(reject_codex_json_rpc_error(response_id, value));
+            true
+        }
+        // No waiter for this id: leave the message to the normal event path
+        // instead of silently dropping it.
+        None => false,
     }
-    true
 }
 
 fn codex_interrupt_response_pending(responses: &CodexInterruptResponseRegistry) -> bool {

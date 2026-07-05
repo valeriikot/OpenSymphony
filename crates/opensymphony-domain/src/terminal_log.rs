@@ -375,8 +375,17 @@ fn snippet(text: &str, query: &str) -> String {
     let Some(pos) = lower.find(query) else {
         return text.chars().take(120).collect();
     };
-    let start = pos.saturating_sub(40);
-    let end = (pos + query.len() + 40).min(text.len());
+    // `pos` indexes the lowercased copy, whose byte offsets can differ from
+    // `text` (e.g. `İ` lowercases to two chars), so clamp both bounds to char
+    // boundaries of the string actually being sliced.
+    let mut start = pos.saturating_sub(40).min(text.len());
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (pos + query.len() + 40).min(text.len());
+    while end < text.len() && !text.is_char_boundary(end) {
+        end += 1;
+    }
     text[start..end].to_string()
 }
 
@@ -441,6 +450,26 @@ mod tests {
         let matches = store.search("term-1", "alpha");
         let seqs: Vec<_> = matches.iter().map(|(seq, _, _)| *seq).collect();
         assert_eq!(seqs, vec![1, 3]);
+    }
+
+    #[test]
+    fn search_snippets_do_not_panic_on_multibyte_content() {
+        let mut store = TerminalLogStore::new();
+        // The match sits within 40 bytes of multibyte characters on both
+        // sides, so naive byte slicing would split a char boundary.
+        let content = format!("{}error{}", "构建失败：".repeat(4), "→".repeat(30));
+        store.ingest_frame(sample_frame(1, "term-1", &content, None), "fid-1".into());
+
+        let matches = store.search("term-1", "error");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].2.contains("error"));
+
+        // Lowercasing `İ` changes byte length, shifting match offsets between
+        // the lowered copy and the original text.
+        let dotted = format!("{}fail", "İ".repeat(50));
+        store.ingest_frame(sample_frame(2, "term-2", &dotted, None), "fid-2".into());
+        let matches = store.search("term-2", "fail");
+        assert_eq!(matches.len(), 1);
     }
 
     #[test]

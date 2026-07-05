@@ -1100,9 +1100,20 @@ impl LinearClient {
     }
 
     async fn sleep_before_retry(&self, error: &LinearError, attempt: usize) {
-        let delay = error
+        let mut delay = error
             .retry_after()
             .unwrap_or_else(|| self.exponential_backoff(attempt));
+        if !error.is_rate_limited() {
+            // Linear attaches x-ratelimit-*-reset headers to every response,
+            // so a transient 5xx can carry a "retry after" pointing at the end
+            // of the hourly rate-limit window. Only rate-limited errors may
+            // honor the server delay inline (bounded by should_retry's cap);
+            // everything else stays within the configured backoff ceiling.
+            delay = delay.min(std::cmp::min(
+                self.config.retry_policy.max_backoff,
+                MAX_INLINE_RATE_LIMIT_RETRY,
+            ));
+        }
         debug!(
             attempt,
             delay_ms = delay.as_millis(),
