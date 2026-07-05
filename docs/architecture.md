@@ -125,6 +125,9 @@ This keeps one canonical Linear API surface for the agent path.
   - workspace management and manifests
 - `opensymphony_linear`
   - Linear GraphQL read adapter and guarded archive mutation
+- `opensymphony_jira`
+  - Jira REST read adapter (enhanced JQL search, state refresh, workpad
+    comments, ADF-to-text rendering) behind the same tracker-neutral models
 - `opensymphony_memory`
   - issue capsules, DuckDB memory index, docs sync, and archive eligibility
 - `opensymphony_code_intel`
@@ -136,6 +139,11 @@ This keeps one canonical Linear API surface for the agent path.
   - local Codex app-server stdio adapter, JSON-RPC lifecycle requests, event
     normalization, installed-schema validation, credential reuse, and benchmark
     helpers for experimental transports
+- `opensymphony_claude`
+  - Claude Code CLI headless adapter: stream-json launch flags, event
+    normalization, bounded summaries, and token usage mapping
+- `opensymphony_notify`
+  - best-effort Slack/LINE notifications for successfully implemented tickets
 - `opensymphony_orchestrator`
   - scheduler loop, route decisions, and reconciliation
 - `opensymphony_control`
@@ -171,10 +179,11 @@ Local MVP process graph:
 opensymphony run
   ├─ orchestrator
   ├─ workspace manager
-  ├─ linear adapter
+  ├─ tracker adapter (Linear GraphQL or Jira REST)
   ├─ openhands REST client
   ├─ openhands WebSocket client
   ├─ optional Codex app-server stdio worker
+  ├─ optional Claude Code headless worker
   ├─ gateway API
   ├─ control-plane compatibility API
   └─ local server supervisor
@@ -184,7 +193,8 @@ opensymphony run
 The scheduler attaches a `HarnessRouteDecision` to each worker start request.
 The default route remains `openhands_agent_server`. Workflow `routing.harness`
 or the `OPENSYMPHONY_HARNESS` environment override can select the local
-`codex_app_server` route when that harness is available and can start runs.
+`codex_app_server` or `claude_code` routes when the selected harness is
+available and can start runs.
 Route decisions are emitted as `routing.decision` runtime audit events so dry-run
 previews and real dispatches show the selected harness, model, and model
 profile.

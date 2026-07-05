@@ -197,9 +197,10 @@ subscription-backed entries. Existing saved desktop or web profiles remain
 unchanged until an operator edits them.
 
 Harness and model selection are configured with the alpha `routing`
-front-matter section. When omitted, `opensymphony run` keeps the default
-`openhands_agent_server` harness and the OpenHands LLM settings from the
-workflow.
+front-matter section. Supported `routing.harness` values are
+`openhands_agent_server` (default), `codex_app_server`, and `claude_code`.
+When omitted, `opensymphony run` keeps the default `openhands_agent_server`
+harness and the OpenHands LLM settings from the workflow.
 
 ```yaml
 routing:
@@ -224,6 +225,14 @@ configuration such as `~/.codex/config.toml`. Codex-only routing does not
 resolve OpenHands LLM environment variables or launch the managed OpenHands
 server.
 
+When `routing.harness` is `claude_code`, each issue run launches one headless
+Claude Code CLI session (`claude --print --output-format stream-json
+--permission-mode bypassPermissions`); a selected model is passed as
+`--model`, and when no model is selected the CLI's own configured default is
+used. Claude-only routing likewise skips OpenHands LLM resolution and the
+managed OpenHands server. See
+[Claude Code Harness](claude-code-harness.md) for the full contract.
+
 Local Codex execution uses a full-automation profile. OpenSymphony launches the
 installed Codex CLI as
 `codex --dangerously-bypass-hook-trust app-server --stdio`, validates
@@ -239,7 +248,12 @@ launching a model-backed worker. The selected harness must still be available
 and able to start runs.
 For local Codex stdio execution, `OPENSYMPHONY_CODEX_BIN` may point to an
 alternate Codex binary in trusted operator environments only; it is not a
-hosted-mode tenant input.
+hosted-mode tenant input. `OPENSYMPHONY_CLAUDE_BIN` plays the same role for
+the Claude Code harness.
+
+Successful runs can optionally announce implemented tickets to Slack and LINE
+via `SLACK_WEBHOOK_URL`, `LINE_CHANNEL_ACCESS_TOKEN`, and `LINE_RECIPIENT_ID`;
+see [Success Notifications](notifications.md).
 
 OpenAI ChatGPT/Codex subscription credentials are available only when
 OpenSymphony is built with the `openhands-subscription-credentials` Cargo

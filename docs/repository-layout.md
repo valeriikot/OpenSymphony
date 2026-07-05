@@ -57,6 +57,13 @@ package, not standalone published crates.
 - tracker reconciliation helpers
 - guarded operator-side issue archival for memory cleanup
 
+### `opensymphony_jira`
+
+- Jira Cloud/Data Center REST read adapter (`tracker.kind: jira`)
+- enhanced JQL search, pagination, and state refresh
+- ADF-to-text rendering and workpad comment source
+- normalization into the tracker-neutral domain models
+
 ### `opensymphony_memory`
 
 - issue capsule generation
@@ -84,6 +91,16 @@ package, not standalone published crates.
 - Codex JSON-RPC lifecycle request and notification normalization helpers
 - model credential reuse mapping from gateway model settings
 - benchmark requirement descriptors for experimental transports
+
+### `opensymphony_claude`
+
+- Claude Code CLI headless adapter (`routing.harness: claude_code`)
+- stream-json launch flags and event normalization
+- bounded event summaries and token usage mapping
+
+### `opensymphony_notify`
+
+- best-effort Slack/LINE notifications for successfully implemented tickets
 
 ### `opensymphony_orchestrator`
 

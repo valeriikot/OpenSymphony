@@ -2,7 +2,15 @@
 
 OpenSymphony is a Rust implementation of the [OpenAI Symphony](https://github.com/openai/symphony) specification for orchestrating AI coding agents. It connects to [Linear](https://linear.app) or [Jira](https://www.atlassian.com/software/jira) for issue tracking and can run issues through the managed [OpenHands](https://github.com/OpenHands/OpenHands) agent-server, the local Codex app-server harness, or Anthropic's [Claude Code](https://claude.com/claude-code) CLI in headless mode.
 
-This fork ([valeriikot/OpenSymphony](https://github.com/valeriikot/OpenSymphony)) adds Jira tracker support and a Claude Code harness on top of upstream; see [Install From This Git Repository](#install-from-this-git-repository), [docs/jira.md](docs/jira.md), and [docs/claude-code-harness.md](docs/claude-code-harness.md).
+This fork ([valeriikot/OpenSymphony](https://github.com/valeriikot/OpenSymphony)) extends upstream with:
+
+- **Jira tracker support** — run the orchestrator against Jira Cloud/Data Center ([docs/jira.md](docs/jira.md))
+- **Claude Code harness** — dispatch issue runs to Anthropic's Claude Code CLI in headless mode ([docs/claude-code-harness.md](docs/claude-code-harness.md))
+- **Success notifications** — announce implemented tickets to Slack and LINE ([docs/notifications.md](docs/notifications.md))
+- **A codebase-wide bug-fix sweep** — scheduler recovery, gateway pagination, tracker retry, and harness accounting fixes
+- **Drop-in Python ports for agentic-os** — selected components packaged for [modimihir07/agentic-os](https://github.com/modimihir07/agentic-os) ([contrib/agentic-os](contrib/agentic-os), analysis in [docs/agentic-os-extraction.md](docs/agentic-os-extraction.md))
+
+See [Install From This Git Repository](#install-from-this-git-repository) to install the fork.
 
 ![OpenSymphony desktop app showing the task graph, run detail, changed files, and diff inspector](docs/images/opensymphony-app.png)
 
@@ -558,6 +566,7 @@ OPENSYMPHONY_LIVE_OPENHANDS=1 ./scripts/live_e2e.sh
 - [Jira Tracker](docs/jira.md) - Jira configuration, credentials, and current scope
 - [Claude Code Harness](docs/claude-code-harness.md) - Headless Claude Code CLI harness contract and limitations
 - [Success Notifications](docs/notifications.md) - Slack and LINE notifications for implemented tickets
+- [agentic-os Extraction](docs/agentic-os-extraction.md) - Components worth porting into agentic-os, with drop-in Python ports in [contrib/agentic-os](contrib/agentic-os)
 - [Deployment Modes](docs/deployment-modes.md) - Local vs hosted deployment
 - [Installer and Distribution Strategy](docs/installer-and-distribution.md) - Future signed installer shape and DuckDB packaging boundaries
 - [Operations](docs/operations.md) - Doctor, rehydration, diagnostics, and local ops
