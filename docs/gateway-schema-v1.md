@@ -50,8 +50,8 @@ run actions, event stream behavior, approval support, model-setting support,
 cancellation, pause/resume, and history/replay support.
 
 The harness list deliberately uses stable strings such as
-`openhands_agent_server`, `codex_app_server`, and `rust_native` rather than
-private adapter class names. Clients should use the advertised booleans and
+`openhands_agent_server`, `codex_app_server`, `claude_code`, and
+`rust_native` rather than private adapter class names. Clients should use the advertised booleans and
 feature gaps instead of special-casing adapter internals.
 
 ## Model And Credential Settings

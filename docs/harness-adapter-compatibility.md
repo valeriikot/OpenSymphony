@@ -93,6 +93,20 @@ Known gaps:
   available.
 - WebSocket transport remains experimental; stdio is the supported local
   integration mode.
+
+## Claude Code local harness
+
+`claude_code` is advertised as available with runtime contract
+`claude-code-stream-json-v1`, `stream_json` transport, and `stdio` mode.
+`opensymphony run` selects it through `routing.harness: claude_code` or the
+`OPENSYMPHONY_HARNESS` override. Each issue run is one headless CLI session;
+there is no in-band cancellation contract, so scheduler interrupts terminate
+the session process (`cancellation.force_stop: true`,
+`acknowledges_cancel: false`). Capability clients must read `feature_gaps`
+before presenting Claude Code as a general-purpose route: mid-session user
+messages, approvals, history fetch, and replay cursors are not exposed by the
+headless stream-json contract. Details in
+[claude-code-harness.md](claude-code-harness.md).
 - Codex subscription readiness uses the local Codex CLI login reference and can
   later compose with hosted broker references without requiring raw subscription
   tokens in OpenSymphony workspaces or browser payloads.
