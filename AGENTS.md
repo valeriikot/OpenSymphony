@@ -113,6 +113,7 @@ Preferred crate and trait boundaries:
 - `opensymphony-openhands`
 - `opensymphony-codex`
 - `opensymphony-claude`
+- `opensymphony-notify`
 - `opensymphony-orchestrator`
 - `opensymphony-control`
 - `opensymphony-cli`

@@ -20,6 +20,8 @@ pub mod opensymphony_jira;
 pub mod opensymphony_linear;
 #[path = "../crates/opensymphony-memory/src/lib.rs"]
 pub mod opensymphony_memory;
+#[path = "../crates/opensymphony-notify/src/lib.rs"]
+pub mod opensymphony_notify;
 #[path = "../crates/opensymphony-openhands/src/lib.rs"]
 pub mod opensymphony_openhands;
 #[path = "../crates/opensymphony-orchestrator/src/lib.rs"]
