@@ -770,6 +770,12 @@ impl RetryEntry {
         policy: RetryPolicy,
     ) -> Result<Self, RetryCalculationError> {
         let attempt = RetryAttempt::after(previous_attempt)?;
+        // `attempt` counts every retry cycle, including the continuation
+        // retries queued after each successful turn; backoff must scale with
+        // consecutive failures only, or a long-lived issue's first transient
+        // failure jumps straight to the maximum backoff.
+        let failure_streak =
+            RetryAttempt::new(attempt.get().saturating_sub(normal_retry_count).max(1))?;
 
         Ok(Self {
             issue_id: issue.id.clone(),
@@ -777,7 +783,7 @@ impl RetryEntry {
             attempt,
             normal_retry_count,
             scheduled_at,
-            due_at: scheduled_at.saturating_add(policy.failure_delay(attempt)),
+            due_at: scheduled_at.saturating_add(policy.failure_delay(failure_streak)),
             reason,
             error,
         })

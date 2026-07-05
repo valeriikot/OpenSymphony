@@ -116,11 +116,13 @@ impl InMemoryEventJournal {
     ) -> Result<EventPage, JournalError> {
         let state = self.inner.read().await;
 
-        // Validate cursor against oldest available sequence.
+        // Validate cursor against oldest available sequence. The cursor holds
+        // the last sequence already received and replay starts at `cursor + 1`,
+        // so a cursor equal to `oldest - 1` is still gapless.
         // Cursor sequence 0 is always valid (means "start from beginning").
         if cursor.sequence > 0
             && let Some(oldest) = state.events.front().map(|e| e.sequence)
-            && cursor.sequence < oldest
+            && cursor.sequence.saturating_add(1) < oldest
         {
             return Err(JournalError::InvalidCursor {
                 reason: format!(
@@ -745,9 +747,21 @@ mod tests {
             oldest
         );
 
-        // A cursor between 0 and oldest should fail (cursor > 0, cursor < oldest).
-        let stale_seq = oldest - 1;
-        let cursor = StreamCursor::new(stale_seq, "events");
+        // A cursor at oldest - 1 is gapless: the client last saw the event just
+        // before the retention window, and replay starts exactly at `oldest`.
+        let gapless = StreamCursor::new(oldest - 1, "events");
+        let page = journal
+            .query_after(&gapless, 10)
+            .await
+            .expect("gapless boundary cursor should replay from oldest");
+        assert_eq!(
+            page.events.first().map(|event| event.sequence),
+            Some(oldest)
+        );
+
+        // A cursor further back has genuinely lost events and must fail.
+        assert!(oldest > 2, "eviction should leave oldest > 2, got {oldest}");
+        let cursor = StreamCursor::new(oldest - 2, "events");
         match journal.query_after(&cursor, 10).await {
             Err(JournalError::InvalidCursor { reason }) => {
                 assert!(reason.contains("older than oldest"));

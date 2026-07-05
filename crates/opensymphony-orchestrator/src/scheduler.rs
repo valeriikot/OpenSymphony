@@ -1302,6 +1302,18 @@ where
             Some(recovered_run.conversation),
         )?;
         execution.record_turn_started(observed_at)?;
+        // Recovered runs keep the worker id minted by the previous process,
+        // while this process starts its ordinal at zero; seed the counter past
+        // the recovered ordinal so a fresh dispatch can never mint the same id
+        // and hijack this run's updates, aborts, and capacity slot.
+        if let Some(ordinal) = run
+            .worker_id
+            .as_str()
+            .strip_prefix("scheduler-worker-")
+            .and_then(|suffix| suffix.parse::<u64>().ok())
+        {
+            self.next_worker_ordinal = self.next_worker_ordinal.max(ordinal);
+        }
         self.worker_metadata.insert(
             run.worker_id.clone(),
             WorkerMetadata::new(
@@ -1331,6 +1343,28 @@ where
             summaries.to_vec(),
             &self.config.terminal_state_set(),
         );
+        // Drop candidates that would be rejected by the dispatch predicate
+        // BEFORE applying the capacity window: running issues are still
+        // "active" in the tracker, and letting them consume the window would
+        // starve genuinely dispatchable issues behind them in priority order.
+        let ready = ready
+            .into_iter()
+            .filter(|summary| match IssueId::new(summary.id.clone()) {
+                Ok(issue_id) => match self.executions.get(&issue_id) {
+                    Some(execution) => match execution.status() {
+                        SchedulerStatus::Unclaimed => true,
+                        SchedulerStatus::RetryQueued => execution
+                            .retry()
+                            .is_some_and(|retry| retry.due_at <= observed_at),
+                        SchedulerStatus::Released
+                        | SchedulerStatus::Claimed
+                        | SchedulerStatus::Running => false,
+                    },
+                    None => true,
+                },
+                Err(_) => true,
+            })
+            .collect::<Vec<_>>();
         let available_capacity = usize::try_from(self.config.max_concurrent_agents)
             .unwrap_or(usize::MAX)
             .saturating_sub(self.worker_metadata.len());

@@ -374,10 +374,12 @@ impl std::fmt::Debug for GatewayServer {
 
 impl Drop for GatewayServer {
     fn drop(&mut self) {
+        // Never panic in Drop: a poisoned lock during unwinding would abort
+        // the process, so recover the guard instead.
         if let Some(handle) = self
             .terminal_ingest_handle
             .lock()
-            .expect("terminal ingest handle mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -754,12 +756,6 @@ fn build_capabilities() -> GatewayCapabilities {
                 requires_plan: None,
             },
             FeatureCapability {
-                feature: "action_dispatch".into(),
-                available: false,
-                requires_auth: false,
-                requires_plan: None,
-            },
-            FeatureCapability {
                 feature: "planning".into(),
                 available: true,
                 requires_auth: false,
@@ -809,7 +805,7 @@ fn build_capabilities() -> GatewayCapabilities {
             },
         ],
         auth_modes: vec![AuthMode::None, AuthMode::ApiKey],
-        max_event_page_size: 1000,
+        max_event_page_size: GATEWAY_EVENT_PAGE_LIMIT as u32,
         max_terminal_frame_batch: 500,
     }
 }
@@ -2988,27 +2984,33 @@ async fn get_run_events(
     Query(query): Query<RunEventQuery>,
 ) -> impl IntoResponse {
     let envelope = store.current().await;
+    // The snapshot's recent_events window is published newest-first; expose the
+    // producer-assigned sequence (the documented stable ordering key) instead of
+    // renumbering positionally, so cursors stay valid as the window slides.
     let all_events: Vec<RunEvent> = match find_issue_snapshot(&envelope, &run_id) {
-        Some(issue) => issue
-            .recent_events
-            .iter()
-            .enumerate()
-            .map(|(idx, evt)| RunEvent {
-                sequence: idx as u64 + 1,
-                event_id: evt.event_id.clone(),
-                happened_at: evt.happened_at,
-                kind: evt.kind.clone(),
-                summary: evt.summary.clone(),
-                payload: evt.payload.clone(),
-                raw_payload: evt.payload.as_ref().map(|payload| {
-                    json!({
-                        "kind": evt.kind,
-                        "summary": evt.summary,
-                        "payload": payload,
-                    })
-                }),
-            })
-            .collect(),
+        Some(issue) => {
+            let mut events: Vec<RunEvent> = issue
+                .recent_events
+                .iter()
+                .map(|evt| RunEvent {
+                    sequence: evt.sequence,
+                    event_id: evt.event_id.clone(),
+                    happened_at: evt.happened_at,
+                    kind: evt.kind.clone(),
+                    summary: evt.summary.clone(),
+                    payload: evt.payload.clone(),
+                    raw_payload: evt.payload.as_ref().map(|payload| {
+                        json!({
+                            "kind": evt.kind,
+                            "summary": evt.summary,
+                            "payload": payload,
+                        })
+                    }),
+                })
+                .collect();
+            events.sort_by_key(|event| event.sequence);
+            events
+        }
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -3042,16 +3044,26 @@ async fn get_run_events(
         .page_size
         .unwrap_or(GATEWAY_EVENT_PAGE_LIMIT)
         .clamp(1, GATEWAY_EVENT_PAGE_LIMIT);
-    let start_index = start_sequence.saturating_sub(1) as usize;
-    let next_start = start_index.saturating_add(page_size);
     let events: Vec<RunEvent> = all_events
         .iter()
-        .skip(start_index)
+        .filter(|event| event.sequence >= start_sequence)
         .take(page_size)
         .cloned()
         .collect();
-    let next_cursor = (next_start < all_events.len()).then(|| PageCursor {
-        page_token: (next_start as u64 + 1).to_string(),
+    let has_more = events
+        .last()
+        .map(|last| {
+            all_events
+                .iter()
+                .any(|event| event.sequence > last.sequence)
+        })
+        .unwrap_or(false);
+    let next_cursor = has_more.then(|| PageCursor {
+        page_token: events
+            .last()
+            .map(|last| last.sequence.saturating_add(1))
+            .unwrap_or(start_sequence)
+            .to_string(),
         page_size: page_size as u32,
     });
 
@@ -3681,17 +3693,19 @@ fn build_liveness(issue: &ControlPlaneIssueSnapshot) -> RunLivenessEnvelope {
             _ => RunStreamLiveness::Stalled,
         }
     };
-    let latest = if issue.recent_events.is_empty() {
-        None
-    } else {
-        issue.recent_events.last().map(|evt| RunProgress {
+    // recent_events is published newest-first, so select by the producer
+    // sequence rather than by position to stay order-independent.
+    let latest = issue
+        .recent_events
+        .iter()
+        .max_by_key(|evt| evt.sequence)
+        .map(|evt| RunProgress {
             sequence: evt.sequence,
             event_id: evt.event_id.clone(),
             happened_at: evt.happened_at,
             kind: evt.kind.clone(),
             summary: evt.summary.clone(),
-        })
-    };
+        });
     RunLivenessEnvelope {
         phase,
         stream,
