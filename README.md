@@ -23,6 +23,7 @@ OpenSymphony automates software development workflows by:
 - **Per-issue workspaces**: Deterministic, isolated directories with lifecycle hooks
 - **GraphQL-only Linear integration**: Agent-side Linear reads and writes through checked-in helper/query assets
 - **Jira tracker support**: Run the orchestrator against Jira Cloud or Data Center with `tracker.kind: jira` (see [docs/jira.md](docs/jira.md))
+- **Success notifications**: Announce successfully implemented tickets to Slack and LINE (see [docs/notifications.md](docs/notifications.md))
 - **Conversation reuse policies**: Default per-issue reuse with optional fresh-per-run resets
 - **Harness selection**: Default OpenHands agent-server execution, plus local Codex app-server support for ChatGPT subscription-backed runs and a Claude Code CLI harness for Anthropic subscription or API-key runs
 - **Tree-sitter code intelligence**: Local AST parsing, symbols, diagnostics, and source-cited structural context for agents
@@ -151,6 +152,17 @@ export JIRA_EMAIL="you@example.com"   # Jira Cloud basic auth; omit for Data Cen
 
 See [docs/jira.md](docs/jira.md) for the full Jira configuration contract,
 including the required `tracker.endpoint` site URL.
+
+Optionally, announce successfully implemented tickets to Slack and/or LINE:
+
+```bash
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T000/B000/XXXX"
+export LINE_CHANNEL_ACCESS_TOKEN="<messaging api channel token>"
+export LINE_RECIPIENT_ID="<user, group, or room id>"
+```
+
+Leave these unset to disable notifications. See
+[Success Notifications](docs/notifications.md) for details.
 
 ### OpenHands Runtime Environment
 
@@ -404,6 +416,7 @@ installable crates.io package:
 | `opensymphony_memory` | Issue capsules, DuckDB memory index, docs sync, archive eligibility |
 | `opensymphony_openhands` | REST/WebSocket client for agent runtime |
 | `opensymphony_claude` | Claude Code CLI headless harness adapter |
+| `opensymphony_notify` | Slack/LINE success notifications |
 | `opensymphony_workspace` | Workspace lifecycle, hooks, containment |
 | `opensymphony_control` | Control plane API and snapshot derivation |
 | `opensymphony_tui` | FrankenTUI operator client |
@@ -544,6 +557,7 @@ OPENSYMPHONY_LIVE_OPENHANDS=1 ./scripts/live_e2e.sh
 - [Configuration](docs/configuration.md) - Target repo bootstrap and runtime config
 - [Jira Tracker](docs/jira.md) - Jira configuration, credentials, and current scope
 - [Claude Code Harness](docs/claude-code-harness.md) - Headless Claude Code CLI harness contract and limitations
+- [Success Notifications](docs/notifications.md) - Slack and LINE notifications for implemented tickets
 - [Deployment Modes](docs/deployment-modes.md) - Local vs hosted deployment
 - [Installer and Distribution Strategy](docs/installer-and-distribution.md) - Future signed installer shape and DuckDB packaging boundaries
 - [Operations](docs/operations.md) - Doctor, rehydration, diagnostics, and local ops

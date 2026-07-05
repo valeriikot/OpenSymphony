@@ -28,6 +28,7 @@ use crate::opensymphony_jira::{
     JiraClient, JiraConfig, JiraError, WorkpadComment as JiraWorkpadComment,
 };
 use crate::opensymphony_linear::{LinearClient, LinearConfig, LinearError, WorkpadComment};
+use crate::opensymphony_notify::{IssueCompletionNotification, Notifier};
 use crate::opensymphony_openhands::{
     ConversationMoveOutcome, ConversationStoreKind, IssueConversationManifest, IssueSessionError,
     IssueSessionObserver, IssueSessionPromptKind, IssueSessionResult, IssueSessionRunner,
@@ -239,6 +240,7 @@ pub(super) struct RuntimeWorkerBackend {
     codex_interrupts: CodexInterruptRegistry,
     claude_bin: String,
     claude_interrupts: ClaudeInterruptRegistry,
+    notifier: Arc<Notifier>,
     launch_timeout: Duration,
     updates_tx: mpsc::UnboundedSender<WorkerUpdate>,
     updates_rx: mpsc::UnboundedReceiver<WorkerUpdate>,
@@ -995,6 +997,7 @@ impl RuntimeWorkerBackend {
                 env::var("OPENSYMPHONY_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
             ),
             claude_interrupts: Arc::new(Mutex::new(HashMap::new())),
+            notifier: Arc::new(Notifier::from_process_env()),
             launch_timeout: DEFAULT_WORKER_LAUNCH_TIMEOUT,
             updates_tx,
             updates_rx,
@@ -1050,6 +1053,7 @@ impl RuntimeWorkerBackend {
         let codex_interrupts = Arc::clone(&self.codex_interrupts);
         let claude_bin = self.claude_bin.clone();
         let claude_interrupts = Arc::clone(&self.claude_interrupts);
+        let notifier = Arc::clone(&self.notifier);
         let issue = request.issue.clone();
         let launch_worker_id = worker_id.clone();
         let handle = tokio::spawn(async move {
@@ -1131,6 +1135,7 @@ impl RuntimeWorkerBackend {
                     &worker_env,
                 )
                 .await;
+                notify_run_success(&notifier, &issue, &route.harness_kind, &outcome).await;
                 let _ = updates_tx.send(WorkerUpdate::Finished {
                     worker_id: finished_worker_id.clone(),
                     outcome,
@@ -1155,6 +1160,7 @@ impl RuntimeWorkerBackend {
                     &worker_env,
                 )
                 .await;
+                notify_run_success(&notifier, &issue, &route.harness_kind, &outcome).await;
                 let _ = updates_tx.send(WorkerUpdate::Finished {
                     worker_id: finished_worker_id.clone(),
                     outcome,
@@ -1197,6 +1203,7 @@ impl RuntimeWorkerBackend {
                     Some(error.to_string()),
                 ),
             };
+            notify_run_success(&notifier, &issue, &route.harness_kind, &outcome).await;
             let _ = updates_tx.send(WorkerUpdate::Finished {
                 worker_id: finished_worker_id.clone(),
                 outcome,
@@ -1371,6 +1378,37 @@ fn memory_access_from_runtime(memory: &RuntimeMemoryEnv) -> MemoryWorkerAccess {
 impl Drop for RuntimeWorkerBackend {
     fn drop(&mut self) {
         self.abort_all_tracked_tasks();
+    }
+}
+
+/// Sends the configured Slack/LINE notifications when a worker run finishes
+/// successfully. Strictly best-effort: delivery failures are logged and never
+/// affect the run outcome.
+async fn notify_run_success(
+    notifier: &Notifier,
+    issue: &NormalizedIssue,
+    harness_kind: &str,
+    outcome: &WorkerOutcomeRecord,
+) {
+    if outcome.outcome != WorkerOutcomeKind::Succeeded || !notifier.is_enabled() {
+        return;
+    }
+    let notification = IssueCompletionNotification {
+        identifier: issue.identifier.to_string(),
+        title: issue.title.clone(),
+        url: issue.url.clone(),
+        pr_url: issue.pr_url.clone(),
+        harness_kind: harness_kind.to_string(),
+        attempt: outcome.attempt.map(|attempt| attempt.get()),
+        summary: outcome.summary.clone(),
+    };
+    let delivery = notifier.notify_issue_completed(&notification).await;
+    for error in delivery.errors() {
+        tracing::warn!(
+            identifier = %issue.identifier,
+            %error,
+            "failed to deliver run success notification"
+        );
     }
 }
 
