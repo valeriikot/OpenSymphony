@@ -14,6 +14,10 @@ Related specifications:
   Markdown memory corpus should evolve into Open Knowledge Format bundles.
 - [Knowledge Graph Specification](specs/llm-wiki-graph-view-spec.md) describes
   the client-side graph explorer for those bundles.
+- [Reusable Fix-Recipe Library Specification](specs/reusable-fix-recipes.md)
+  describes turning recurring fixes into detector-plus-template recipes injected
+  into the `memory context` kickoff bundle. See
+  [Pipecrew reuse gap analysis](pipecrew-reuse-gap.md) for the motivation.
 
 ## Rationale and Model
 
