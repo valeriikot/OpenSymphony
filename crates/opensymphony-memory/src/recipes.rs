@@ -269,7 +269,7 @@ pub fn match_recipes<'a>(
 
 /// Renders matched recipes as a Markdown section suitable for appending to the
 /// `memory context` kickoff bundle. Returns an empty string when nothing matched.
-pub fn render_recipes_section(matches: &[RecipeMatch]) -> String {
+pub fn render_recipes_section(matches: &[RecipeMatch<'_>]) -> String {
     if matches.is_empty() {
         return String::new();
     }
