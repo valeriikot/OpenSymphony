@@ -2112,6 +2112,7 @@ fn normalize_tracker_issue(
                     id: Some(IssueId::new(blocker.id.clone())?),
                     identifier: Some(IssueIdentifier::new(blocker.identifier.clone())?),
                     state: Some(blocker.state.name.clone()),
+                    state_kind: Some(blocker.state.kind.clone()),
                     created_at: None,
                     updated_at: None,
                 })
@@ -2310,11 +2311,24 @@ fn tracker_issue_from_normalized(issue: &NormalizedIssue) -> TrackerIssue {
                 let id = blocker.id.as_ref()?.to_string();
                 let identifier = blocker.identifier.as_ref()?.to_string();
                 let state_name = blocker.state.clone().unwrap_or_default();
+                // Prefer the tracker-provided kind captured during
+                // normalization; deriving from the name only understands
+                // Linear's status vocabulary and would misclassify Jira
+                // statuses (e.g. "Resolved") as non-terminal.
+                let state = match &blocker.state_kind {
+                    Some(kind) => TrackerIssueState {
+                        id: normalized_state_name(&state_name),
+                        name: state_name.clone(),
+                        tracker_type: tracker_type_for_state_kind(kind).to_string(),
+                        kind: kind.clone(),
+                    },
+                    None => tracker_issue_state_from_name(&state_name),
+                };
                 Some(TrackerIssueBlocker {
                     id,
                     identifier: identifier.clone(),
                     title: identifier,
-                    state: tracker_issue_state_from_name(&state_name),
+                    state,
                 })
             })
             .collect(),
@@ -2362,7 +2376,7 @@ fn should_dispatch_issue_summary(
     !issue
         .blocked_by
         .iter()
-        .any(|blocker| !blocker.is_terminal())
+        .any(|blocker| !super::selection::blocker_is_terminal(blocker, terminal_states))
         && (issue.sub_issues.is_empty()
             || issue
                 .sub_issues

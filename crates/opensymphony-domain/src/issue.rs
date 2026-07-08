@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{IssueId, IssueIdentifier, TimestampMs, TrackerStateId};
+use super::{IssueId, IssueIdentifier, TimestampMs, TrackerIssueStateKind, TrackerStateId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +22,12 @@ pub struct BlockerRef {
     pub id: Option<IssueId>,
     pub identifier: Option<IssueIdentifier>,
     pub state: Option<String>,
+    /// Tracker-provided state kind for the blocker. Trackers such as Jira
+    /// classify statuses by category rather than by well-known names, so the
+    /// kind must survive normalization instead of being re-derived from the
+    /// state name later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_kind: Option<TrackerIssueStateKind>,
     pub created_at: Option<TimestampMs>,
     pub updated_at: Option<TimestampMs>,
 }

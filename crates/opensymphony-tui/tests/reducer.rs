@@ -461,3 +461,45 @@ fn detail_focus_moves_changed_file_selection_and_toggles_diff() {
     assert!(rendered.contains("FILE DIFF"));
     assert!(rendered.contains("+assert!(true);"));
 }
+
+#[test]
+fn enter_on_issue_list_focuses_the_detail_pane() {
+    let mut state = TuiState::default();
+    state.reduce(TuiAction::SnapshotReceived(Box::new(fixture(1, 2))));
+
+    assert_eq!(state.focus, FocusPane::Issues);
+    state.reduce(TuiAction::ToggleDetailDiff);
+
+    assert_eq!(state.focus, FocusPane::Detail);
+}
+
+#[test]
+fn enter_without_issues_keeps_issue_list_focus() {
+    let mut state = TuiState::default();
+    state.reduce(TuiAction::SnapshotReceived(Box::new(fixture(1, 0))));
+
+    state.reduce(TuiAction::ToggleDetailDiff);
+
+    assert_eq!(state.focus, FocusPane::Issues);
+}
+
+#[test]
+fn preserves_selection_across_snapshots_with_duplicate_identifiers() {
+    let duplicates = vec![
+        "COE-255".to_owned(),
+        "COE-255".to_owned(),
+        "COE-256".to_owned(),
+    ];
+    let mut state = TuiState::default();
+    state.reduce(TuiAction::SnapshotReceived(Box::new(
+        fixture_with_identifiers(1, &duplicates),
+    )));
+    state.reduce(TuiAction::MoveSelectionDown);
+    assert_eq!(state.selected_issue, 1);
+
+    state.reduce(TuiAction::SnapshotReceived(Box::new(
+        fixture_with_identifiers(2, &duplicates),
+    )));
+
+    assert_eq!(state.selected_issue, 1);
+}
