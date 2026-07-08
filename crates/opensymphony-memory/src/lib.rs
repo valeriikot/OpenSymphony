@@ -1075,6 +1075,7 @@ include!("archive.rs");
 include!("capture_render.rs");
 include!("index.rs");
 include!("github.rs");
+include!("recipes.rs");
 include!("util.rs");
 
 #[cfg(test)]
