@@ -4409,7 +4409,7 @@ fn linear_client_from_workflow(
         })?;
     if resolved.config.tracker.kind != crate::opensymphony_workflow::TrackerKind::Linear {
         return Err(MemoryError::InvalidInput(
-            "memory tracker sources require `tracker.kind: linear`; Jira workspaces are not yet supported by the memory commands".to_string(),
+            "memory tracker sources require `tracker.kind: linear`; Jira and Vikunja workspaces are not yet supported by the memory commands".to_string(),
         ));
     }
     let mut linear_config = LinearConfig::new(

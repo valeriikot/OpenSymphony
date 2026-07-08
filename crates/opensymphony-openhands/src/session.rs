@@ -3905,6 +3905,7 @@ mod tests {
                 id: Some(must(IssueId::new("issue-100"))),
                 identifier: Some(must(IssueIdentifier::new("COE-100"))),
                 state: Some("Done".to_string()),
+                state_kind: None,
                 created_at: None,
                 updated_at: None,
             }],

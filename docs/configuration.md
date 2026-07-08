@@ -120,7 +120,7 @@ Important fields:
 
 | Field | Description | Env Var | Example |
 |-------|-------------|---------|---------|
-| `tracker.kind` | Issue tracker backend (`linear` or `jira`) | - | `linear` |
+| `tracker.kind` | Issue tracker backend (`linear`, `jira`, or `vikunja`) | - | `linear` |
 | `tracker.project_slug` | Linear `Project.slugId` from the project URL | - | `my-project-5250e49b61f4` |
 | `workspace.root` | Where to store per-issue workspaces | - | `~/.opensymphony/workspaces` |
 | `openhands.conversation.agent.llm.model` | LLM model to use | `LLM_MODEL` | `openai/accounts/fireworks/models/glm-5p1` |
@@ -132,6 +132,10 @@ For Linear trackers, `tracker.project_slug` should store the project's
 For Jira trackers, `tracker.project_slug` stores the Jira project key and
 `tracker.endpoint` must be set to the Jira site base URL; see
 [jira.md](jira.md) for the full configuration and credential contract.
+
+For Vikunja trackers, `tracker.project_slug` stores the numeric Vikunja
+project id and `tracker.endpoint` must be set to the instance base URL; see
+[vikunja.md](vikunja.md) for the full configuration and credential contract.
 
 ## Environment Variables
 

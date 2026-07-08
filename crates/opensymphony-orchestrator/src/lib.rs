@@ -20,7 +20,7 @@ pub use scheduler::{
     WorkerStartRequest, WorkerUpdate, WorkspaceBackend, decide_issue_route,
 };
 pub use selection::{
-    filter_issues_for_dispatch, issue_blocked_by_non_terminal_blockers,
+    blocker_is_terminal, filter_issues_for_dispatch, issue_blocked_by_non_terminal_blockers,
     parent_issue_blocked_by_incomplete_children, should_dispatch_issue, sort_issues_for_dispatch,
 };
 

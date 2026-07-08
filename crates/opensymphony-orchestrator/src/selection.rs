@@ -1,12 +1,32 @@
 use std::collections::HashSet;
 
-use crate::opensymphony_domain::TrackerIssue;
+use crate::opensymphony_domain::{TrackerIssue, TrackerIssueBlocker};
 
-pub fn issue_blocked_by_non_terminal_blockers(issue: &TrackerIssue) -> bool {
+pub fn issue_blocked_by_non_terminal_blockers(
+    issue: &TrackerIssue,
+    terminal_states: &HashSet<String>,
+) -> bool {
     issue
         .blocked_by
         .iter()
-        .any(|blocker| !blocker.is_terminal())
+        .any(|blocker| !blocker_is_terminal(blocker, terminal_states))
+}
+
+/// A blocker is terminal when its tracker-provided state kind says so, or when
+/// its state name matches one of the workflow's configured terminal states.
+/// The name fallback keeps dispatch working for trackers whose terminal status
+/// names are workspace-defined (Jira) rather than a fixed vocabulary (Linear).
+pub fn blocker_is_terminal(
+    blocker: &TrackerIssueBlocker,
+    terminal_states: &HashSet<String>,
+) -> bool {
+    if blocker.is_terminal() {
+        return true;
+    }
+    let state = blocker.state.name.trim();
+    terminal_states
+        .iter()
+        .any(|terminal_state| terminal_state.trim().eq_ignore_ascii_case(state))
 }
 
 pub fn parent_issue_blocked_by_incomplete_children(
@@ -21,7 +41,7 @@ pub fn parent_issue_blocked_by_incomplete_children(
 }
 
 pub fn should_dispatch_issue(issue: &TrackerIssue, terminal_states: &HashSet<String>) -> bool {
-    !issue_blocked_by_non_terminal_blockers(issue)
+    !issue_blocked_by_non_terminal_blockers(issue, terminal_states)
         && !parent_issue_blocked_by_incomplete_children(issue, terminal_states)
 }
 
@@ -194,8 +214,56 @@ mod tests {
             vec![child("COE-278", "Done")],
         );
 
-        assert!(issue_blocked_by_non_terminal_blockers(&issue));
+        assert!(issue_blocked_by_non_terminal_blockers(
+            &issue,
+            &terminal_states()
+        ));
         assert!(!should_dispatch_issue(&issue, &terminal_states()));
+    }
+
+    #[test]
+    fn blocker_with_unknown_kind_is_terminal_when_its_state_name_is_configured_terminal() {
+        // Jira terminal statuses are workspace-defined names; after a
+        // normalization round-trip the kind can degrade to Unknown, so the
+        // configured terminal state names must still unblock dispatch.
+        let issue = issue(
+            "OSYM-2",
+            Some(1),
+            "2026-03-22T00:00:00Z",
+            vec![blocker(
+                "OSYM-1",
+                state("Done", TrackerIssueStateKind::Unknown("unknown".to_string())),
+            )],
+            Vec::new(),
+        );
+
+        assert!(!issue_blocked_by_non_terminal_blockers(
+            &issue,
+            &terminal_states()
+        ));
+        assert!(should_dispatch_issue(&issue, &terminal_states()));
+    }
+
+    #[test]
+    fn blocker_with_terminal_kind_unblocks_even_when_name_is_not_configured() {
+        // Jira reports status categories, so a blocker resolved under a status
+        // name missing from `terminal_states` (e.g. "Resolved") still counts
+        // as terminal via its kind.
+        let issue = issue(
+            "OSYM-2",
+            Some(1),
+            "2026-03-22T00:00:00Z",
+            vec![blocker(
+                "OSYM-1",
+                state("Resolved", TrackerIssueStateKind::Completed),
+            )],
+            Vec::new(),
+        );
+
+        assert!(!issue_blocked_by_non_terminal_blockers(
+            &issue,
+            &terminal_states()
+        ));
     }
 
     #[test]

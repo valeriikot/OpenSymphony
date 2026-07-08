@@ -751,6 +751,9 @@ fn optional_task_graph_client(
         Ok(RuntimeTrackerClient::Jira(client)) => {
             Some(Arc::new(client) as Arc<dyn LinearTaskGraphClient>)
         }
+        Ok(RuntimeTrackerClient::Vikunja(client)) => {
+            Some(Arc::new(client) as Arc<dyn LinearTaskGraphClient>)
+        }
         Err(error) => {
             warn!(
                 %error,

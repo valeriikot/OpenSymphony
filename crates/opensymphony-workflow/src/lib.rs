@@ -382,6 +382,42 @@ tracker:
     }
 
     #[test]
+    fn resolves_vikunja_tracker_with_env_credentials() {
+        let workflow = WorkflowDefinition::parse(
+            r#"---
+tracker:
+  kind: vikunja
+  endpoint: https://vikunja.example.com
+  project_slug: "7"
+  active_states:
+    - Todo
+  terminal_states:
+    - Done
+---
+{{ issue.identifier }}
+"#,
+        )
+        .expect("workflow should parse");
+        let env = env([("VIKUNJA_API_TOKEN", "vikunja-token")]);
+
+        let resolved = workflow
+            .resolve(Path::new("/repo"), &env)
+            .expect("workflow should resolve");
+
+        assert!(matches!(
+            resolved.config.tracker.kind,
+            TrackerKind::Vikunja
+        ));
+        assert_eq!(
+            resolved.config.tracker.endpoint,
+            "https://vikunja.example.com"
+        );
+        assert_eq!(resolved.config.tracker.api_key, "vikunja-token");
+        assert_eq!(resolved.config.tracker.auth_email, None);
+        assert_eq!(resolved.config.tracker.project_slug, "7");
+    }
+
+    #[test]
     fn jira_auth_email_is_optional_for_bearer_tokens() {
         let workflow = WorkflowDefinition::parse(
             r#"---

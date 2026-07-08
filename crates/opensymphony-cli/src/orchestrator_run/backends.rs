@@ -28,6 +28,9 @@ use crate::opensymphony_jira::{
     JiraClient, JiraConfig, JiraError, WorkpadComment as JiraWorkpadComment,
 };
 use crate::opensymphony_linear::{LinearClient, LinearConfig, LinearError, WorkpadComment};
+use crate::opensymphony_vikunja::{
+    VikunjaClient, VikunjaConfig, VikunjaError, WorkpadComment as VikunjaWorkpadComment,
+};
 use crate::opensymphony_notify::{IssueCompletionNotification, Notifier};
 use crate::opensymphony_openhands::{
     ConversationMoveOutcome, ConversationStoreKind, IssueConversationManifest, IssueSessionError,
@@ -123,6 +126,7 @@ pub(super) struct RuntimeTrackerBackend {
 pub(super) enum RuntimeTrackerClient {
     Linear(LinearClient),
     Jira(JiraClient),
+    Vikunja(VikunjaClient),
 }
 
 #[derive(Debug, Error)]
@@ -131,6 +135,8 @@ pub(super) enum RuntimeTrackerError {
     Linear(#[from] LinearError),
     #[error(transparent)]
     Jira(#[from] JiraError),
+    #[error(transparent)]
+    Vikunja(#[from] VikunjaError),
 }
 
 impl RuntimeTrackerError {
@@ -138,6 +144,7 @@ impl RuntimeTrackerError {
         match self {
             Self::Linear(error) => error.category(),
             Self::Jira(error) => error.category(),
+            Self::Vikunja(error) => error.category(),
         }
     }
 
@@ -145,6 +152,7 @@ impl RuntimeTrackerError {
         match self {
             Self::Linear(error) => error.retry_after(),
             Self::Jira(error) => error.retry_after(),
+            Self::Vikunja(error) => error.retry_after(),
         }
     }
 }
@@ -154,6 +162,7 @@ impl RuntimeTrackerClient {
         match self {
             Self::Linear(client) => Ok(client.candidate_issues().await?),
             Self::Jira(client) => Ok(client.candidate_issues().await?),
+            Self::Vikunja(client) => Ok(client.candidate_issues().await?),
         }
     }
 
@@ -163,6 +172,7 @@ impl RuntimeTrackerClient {
         match self {
             Self::Linear(client) => Ok(client.candidate_issue_summaries().await?),
             Self::Jira(client) => Ok(client.candidate_issue_summaries().await?),
+            Self::Vikunja(client) => Ok(client.candidate_issue_summaries().await?),
         }
     }
 
@@ -170,6 +180,7 @@ impl RuntimeTrackerClient {
         match self {
             Self::Linear(client) => Ok(client.terminal_issues().await?),
             Self::Jira(client) => Ok(client.terminal_issues().await?),
+            Self::Vikunja(client) => Ok(client.terminal_issues().await?),
         }
     }
 
@@ -180,6 +191,7 @@ impl RuntimeTrackerClient {
         match self {
             Self::Linear(client) => Ok(client.project_issues_by_identifiers(identifiers).await?),
             Self::Jira(client) => Ok(client.project_issues_by_identifiers(identifiers).await?),
+            Self::Vikunja(client) => Ok(client.project_issues_by_identifiers(identifiers).await?),
         }
     }
 
@@ -191,6 +203,7 @@ impl RuntimeTrackerClient {
         match self {
             Self::Linear(client) => Ok(client.issue_states_by_ids(issue_ids).await?),
             Self::Jira(client) => Ok(client.issue_states_by_ids(issue_ids).await?),
+            Self::Vikunja(client) => Ok(client.issue_states_by_ids(issue_ids).await?),
         }
     }
 }
@@ -294,6 +307,10 @@ struct JiraWorkpadCommentSource {
     client: JiraClient,
 }
 
+struct VikunjaWorkpadCommentSource {
+    client: VikunjaClient,
+}
+
 #[derive(Clone, Debug, Default)]
 struct OverlayEnvironment {
     overrides: BTreeMap<String, String>,
@@ -332,6 +349,20 @@ impl WorkpadCommentSource for JiraWorkpadCommentSource {
             .fetch_workpad_comment(issue_id)
             .await
             .map(|comment| comment.map(workpad_comment_from_jira))
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[async_trait]
+impl WorkpadCommentSource for VikunjaWorkpadCommentSource {
+    async fn fetch_workpad_comment(
+        &self,
+        issue_id: &str,
+    ) -> Result<Option<SessionWorkpadComment>, String> {
+        self.client
+            .fetch_workpad_comment(issue_id)
+            .await
+            .map(|comment| comment.map(workpad_comment_from_vikunja))
             .map_err(|error| error.to_string())
     }
 }
@@ -399,12 +430,29 @@ pub(super) fn build_jira_client(workflow: &ResolvedWorkflow) -> Result<JiraClien
     JiraClient::new(config)
 }
 
+pub(super) fn build_vikunja_client(
+    workflow: &ResolvedWorkflow,
+) -> Result<VikunjaClient, VikunjaError> {
+    let tracker = &workflow.config.tracker;
+    let mut config = VikunjaConfig::new(
+        tracker.endpoint.clone(),
+        tracker.api_key.clone(),
+        tracker.project_slug.clone(),
+    );
+    config.active_states = tracker.active_states.clone();
+    config.terminal_states = tracker.terminal_states.clone();
+    VikunjaClient::new(config)
+}
+
 pub(super) fn build_tracker_client(
     workflow: &ResolvedWorkflow,
 ) -> Result<RuntimeTrackerClient, RuntimeTrackerError> {
     match workflow.config.tracker.kind {
         TrackerKind::Linear => Ok(RuntimeTrackerClient::Linear(build_linear_client(workflow)?)),
         TrackerKind::Jira => Ok(RuntimeTrackerClient::Jira(build_jira_client(workflow)?)),
+        TrackerKind::Vikunja => Ok(RuntimeTrackerClient::Vikunja(build_vikunja_client(
+            workflow,
+        )?)),
     }
 }
 
@@ -417,6 +465,14 @@ fn workpad_comment_from_linear(comment: WorkpadComment) -> SessionWorkpadComment
 }
 
 fn workpad_comment_from_jira(comment: JiraWorkpadComment) -> SessionWorkpadComment {
+    SessionWorkpadComment {
+        id: comment.id,
+        body: comment.body,
+        updated_at: comment.updated_at,
+    }
+}
+
+fn workpad_comment_from_vikunja(comment: VikunjaWorkpadComment) -> SessionWorkpadComment {
     SessionWorkpadComment {
         id: comment.id,
         body: comment.body,
@@ -971,6 +1027,10 @@ impl RuntimeWorkerBackend {
             }
             Ok(RuntimeTrackerClient::Jira(client)) => {
                 Some(Arc::new(JiraWorkpadCommentSource { client }) as Arc<dyn WorkpadCommentSource>)
+            }
+            Ok(RuntimeTrackerClient::Vikunja(client)) => {
+                Some(Arc::new(VikunjaWorkpadCommentSource { client })
+                    as Arc<dyn WorkpadCommentSource>)
             }
             Err(error) => {
                 tracing::warn!(

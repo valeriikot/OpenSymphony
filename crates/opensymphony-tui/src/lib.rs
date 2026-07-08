@@ -254,7 +254,14 @@ impl TuiState {
                 };
             }
             TuiAction::ToggleDetailDiff => {
-                if matches!(self.focus, FocusPane::Detail | FocusPane::Activity)
+                if self.focus == FocusPane::Issues {
+                    // Enter on the issue list opens the detail pane instead of
+                    // silently doing nothing; issues without a workspace yet
+                    // (never dispatched) have no diff to toggle.
+                    if self.selected_issue().is_some() {
+                        self.focus = FocusPane::Detail;
+                    }
+                } else if matches!(self.focus, FocusPane::Detail | FocusPane::Activity)
                     && self.selected_file_change().is_some()
                 {
                     self.detail_diff_open = !self.detail_diff_open;
@@ -577,7 +584,7 @@ impl TuiState {
         ));
         spans.push(Span::raw(" | "));
         spans.push(Span::styled(
-            "q quit  tab focus  shift-tab back  enter diff  e toggle",
+            "q quit  tab focus  shift-tab back  enter details/diff  e toggle",
             Style::new().fg(BRIGHT_BLACK),
         ));
 
@@ -805,7 +812,7 @@ impl TuiState {
 
         if issue.workspace_path_suffix == "-" {
             lines.push(Line::from(Span::styled(
-                "workspace unavailable",
+                "no workspace yet - issue has not been started",
                 Style::new().dim(),
             )));
             return lines;
@@ -1332,7 +1339,7 @@ impl TuiState {
         }
 
         if issue.workspace_path_suffix == "-" {
-            lines.push(fit("workspace unavailable", width));
+            lines.push(fit("no workspace yet - issue has not been started", width));
             return lines;
         }
 
@@ -1664,17 +1671,27 @@ impl TuiState {
             return;
         }
 
-        if let Some(identifier) = selected_issue_identifier
-            && let Some(selected_issue) = self.latest_snapshot.as_ref().and_then(|snapshot| {
+        if let Some(identifier) = selected_issue_identifier {
+            // Duplicate identifiers would otherwise snap the selection back to
+            // the first occurrence on every snapshot refresh.
+            let current_still_matches = self
+                .latest_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.snapshot.issues.get(self.selected_issue))
+                .is_some_and(|issue| issue.identifier == identifier);
+            if current_still_matches {
+                return;
+            }
+            if let Some(selected_issue) = self.latest_snapshot.as_ref().and_then(|snapshot| {
                 snapshot
                     .snapshot
                     .issues
                     .iter()
                     .position(|issue| issue.identifier == identifier)
-            })
-        {
-            self.selected_issue = selected_issue;
-            return;
+            }) {
+                self.selected_issue = selected_issue;
+                return;
+            }
         }
 
         self.selected_issue = min(self.selected_issue, count - 1);

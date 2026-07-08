@@ -25,6 +25,13 @@ tracker:
   `OSYM-123`), not a numeric project id.
 - `tracker.active_states` and `tracker.terminal_states` use Jira status
   *names* exactly as they appear in the project's workflow.
+- List **every** status the project treats as finished in
+  `terminal_states` (e.g. `Done`, plus custom ones like `Resolved` or
+  `Shipped`). The scheduler only dispatches an issue once all of its
+  `is blocked by` links and subtasks are terminal, judged by the Jira
+  status category *or* a `terminal_states` name match, so an unlisted
+  terminal status on a blocker or subtask can keep the dependent issue
+  waiting.
 
 ## 2. Credentials
 
