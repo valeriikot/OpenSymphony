@@ -1,10 +1,11 @@
 # OpenSymphony
 
-OpenSymphony is a Rust implementation of the [OpenAI Symphony](https://github.com/openai/symphony) specification for orchestrating AI coding agents. It connects to [Linear](https://linear.app) or [Jira](https://www.atlassian.com/software/jira) for issue tracking and can run issues through the managed [OpenHands](https://github.com/OpenHands/OpenHands) agent-server, the local Codex app-server harness, or Anthropic's [Claude Code](https://claude.com/claude-code) CLI in headless mode.
+OpenSymphony is a Rust implementation of the [OpenAI Symphony](https://github.com/openai/symphony) specification for orchestrating AI coding agents. It connects to [Linear](https://linear.app), [Jira](https://www.atlassian.com/software/jira), or [Vikunja](https://vikunja.io) for issue tracking and can run issues through the managed [OpenHands](https://github.com/OpenHands/OpenHands) agent-server, the local Codex app-server harness, or Anthropic's [Claude Code](https://claude.com/claude-code) CLI in headless mode.
 
 This fork ([valeriikot/OpenSymphony](https://github.com/valeriikot/OpenSymphony)) extends upstream with:
 
 - **Jira tracker support** — run the orchestrator against Jira Cloud/Data Center ([docs/jira.md](docs/jira.md))
+- **Vikunja tracker support** — run the orchestrator against a self-hosted Vikunja instance ([docs/vikunja.md](docs/vikunja.md))
 - **Claude Code harness** — dispatch issue runs to Anthropic's Claude Code CLI in headless mode ([docs/claude-code-harness.md](docs/claude-code-harness.md))
 - **Success notifications** — announce implemented tickets to Slack and LINE ([docs/notifications.md](docs/notifications.md))
 - **A codebase-wide bug-fix sweep** — scheduler recovery, gateway pagination, tracker retry, and harness accounting fixes
@@ -18,7 +19,7 @@ See [Install From This Git Repository](#install-from-this-git-repository) to ins
 
 OpenSymphony automates software development workflows by:
 
-1. **Polling the issue tracker** (Linear or Jira) for issues in active states (Todo, In Progress, etc.)
+1. **Polling the issue tracker** (Linear, Jira, or Vikunja) for issues in active states (Todo, In Progress, etc.)
 2. **Creating isolated workspaces** for each issue with lifecycle hooks
 3. **Dispatching AI agents** via OpenHands, Codex, or Claude Code to work on issues autonomously
 4. **Managing retries, reconciliation, and cleanup** based on issue state changes
@@ -31,6 +32,7 @@ OpenSymphony automates software development workflows by:
 - **Per-issue workspaces**: Deterministic, isolated directories with lifecycle hooks
 - **GraphQL-only Linear integration**: Agent-side Linear reads and writes through checked-in helper/query assets
 - **Jira tracker support**: Run the orchestrator against Jira Cloud or Data Center with `tracker.kind: jira` (see [docs/jira.md](docs/jira.md))
+- **Vikunja tracker support**: Run the orchestrator against a self-hosted Vikunja instance with `tracker.kind: vikunja` (see [docs/vikunja.md](docs/vikunja.md))
 - **Success notifications**: Announce successfully implemented tickets to Slack and LINE (see [docs/notifications.md](docs/notifications.md))
 - **Conversation reuse policies**: Default per-issue reuse with optional fresh-per-run resets
 - **Harness selection**: Default OpenHands agent-server execution, plus local Codex app-server support for ChatGPT subscription-backed runs and a Claude Code CLI harness for Anthropic subscription or API-key runs
@@ -51,7 +53,7 @@ not separately published crates.
 ### Prerequisites
 
 - Rust toolchain (stable)
-- Linear API key or Jira API token (for tracker integration)
+- Linear API key, Jira API token, or Vikunja API token (for tracker integration)
 - For OpenHands: Python 3.13.12 with `uv`, plus an LLM API key for an OpenAI-compatible/LiteLLM provider
 - For Codex: a Codex CLI with `app-server` support and a working ChatGPT login
 - For Claude Code: an installed Claude Code CLI with a working `claude` login or an `ANTHROPIC_API_KEY`
@@ -160,6 +162,16 @@ export JIRA_EMAIL="you@example.com"   # Jira Cloud basic auth; omit for Data Cen
 
 See [docs/jira.md](docs/jira.md) for the full Jira configuration contract,
 including the required `tracker.endpoint` site URL.
+
+For Vikunja (`tracker.kind: vikunja` in the target repo's `WORKFLOW.md`):
+
+```bash
+export VIKUNJA_API_TOKEN="tk_..."
+```
+
+See [docs/vikunja.md](docs/vikunja.md) for the full Vikunja configuration
+contract, including the required `tracker.endpoint` instance URL and the
+fixed `Todo`/`Done` state names.
 
 Optionally, announce successfully implemented tickets to Slack and/or LINE:
 
@@ -421,6 +433,7 @@ installable crates.io package:
 | `opensymphony_orchestrator` | Poll loop, scheduling, retries, state machine |
 | `opensymphony_linear` | GraphQL client for orchestrator-side Linear reads |
 | `opensymphony_jira` | REST client for orchestrator-side Jira reads |
+| `opensymphony_vikunja` | REST client for orchestrator-side Vikunja reads |
 | `opensymphony_memory` | Issue capsules, DuckDB memory index, docs sync, archive eligibility |
 | `opensymphony_openhands` | REST/WebSocket client for agent runtime |
 | `opensymphony_claude` | Claude Code CLI headless harness adapter |
@@ -564,6 +577,7 @@ OPENSYMPHONY_LIVE_OPENHANDS=1 ./scripts/live_e2e.sh
 - [Architecture](docs/architecture.md) - High-level design and component interactions
 - [Configuration](docs/configuration.md) - Target repo bootstrap and runtime config
 - [Jira Tracker](docs/jira.md) - Jira configuration, credentials, and current scope
+- [Vikunja Tracker](docs/vikunja.md) - Vikunja configuration, credentials, and current scope
 - [Claude Code Harness](docs/claude-code-harness.md) - Headless Claude Code CLI harness contract and limitations
 - [Success Notifications](docs/notifications.md) - Slack and LINE notifications for implemented tickets
 - [agentic-os Extraction](docs/agentic-os-extraction.md) - Components worth porting into agentic-os, with drop-in Python ports in [contrib/agentic-os](contrib/agentic-os)

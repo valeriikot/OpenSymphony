@@ -32,6 +32,8 @@ pub mod opensymphony_planning;
 pub mod opensymphony_testkit;
 #[path = "../crates/opensymphony-tui/src/lib.rs"]
 pub mod opensymphony_tui;
+#[path = "../crates/opensymphony-vikunja/src/lib.rs"]
+pub mod opensymphony_vikunja;
 #[path = "../crates/opensymphony-workflow/src/lib.rs"]
 pub mod opensymphony_workflow;
 #[path = "../crates/opensymphony-workspace/src/lib.rs"]

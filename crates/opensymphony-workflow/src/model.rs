@@ -274,6 +274,7 @@ pub struct WorkflowExtensions {
 pub enum TrackerKind {
     Linear,
     Jira,
+    Vikunja,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

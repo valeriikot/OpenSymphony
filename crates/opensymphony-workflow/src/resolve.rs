@@ -86,6 +86,7 @@ fn resolve_tracker<E: Environment>(
     let kind = match normalize_optional_literal(&tracker.kind) {
         Some(kind) if kind.eq_ignore_ascii_case("linear") => TrackerKind::Linear,
         Some(kind) if kind.eq_ignore_ascii_case("jira") => TrackerKind::Jira,
+        Some(kind) if kind.eq_ignore_ascii_case("vikunja") => TrackerKind::Vikunja,
         Some(kind) => return Err(WorkflowConfigError::UnsupportedTrackerKind { kind }),
         None => {
             return Err(WorkflowConfigError::MissingRequiredField {
@@ -101,9 +102,9 @@ fn resolve_tracker<E: Environment>(
             "tracker.endpoint",
             DEFAULT_LINEAR_ENDPOINT,
         )?,
-        // Jira endpoints are per-site (https://<site>.atlassian.net), so
-        // there is no sensible default.
-        TrackerKind::Jira => {
+        // Jira endpoints are per-site (https://<site>.atlassian.net) and
+        // Vikunja instances are self-hosted, so there is no sensible default.
+        TrackerKind::Jira | TrackerKind::Vikunja => {
             let configured = require_literal(tracker.endpoint.as_deref(), "tracker.endpoint")?;
             resolve_string(&configured, env, "tracker.endpoint")?
         }
@@ -142,6 +143,7 @@ fn resolve_tracker_api_key<E: Environment>(
     let fallback_variable = match kind {
         TrackerKind::Linear => "LINEAR_API_KEY",
         TrackerKind::Jira => "JIRA_API_TOKEN",
+        TrackerKind::Vikunja => "VIKUNJA_API_TOKEN",
     };
     env.get(fallback_variable)
         .and_then(normalize_optional_owned)

@@ -64,6 +64,13 @@ package, not standalone published crates.
 - ADF-to-text rendering and workpad comment source
 - normalization into the tracker-neutral domain models
 
+### `opensymphony_vikunja`
+
+- Vikunja REST read adapter (`tracker.kind: vikunja`)
+- project task pagination and per-task state refresh
+- HTML-to-text rendering and workpad comment source
+- normalization into the tracker-neutral domain models
+
 ### `opensymphony_memory`
 
 - issue capsule generation
