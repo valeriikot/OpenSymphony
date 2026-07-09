@@ -134,6 +134,7 @@ mod tests {
             title: None,
             url: None,
             state: state.to_string(),
+            state_kind: None,
         }
     }
 

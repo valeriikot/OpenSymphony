@@ -1046,7 +1046,7 @@ impl WorkspaceManager {
             }
         })?;
 
-        fs::write(&path, payload)
+        write_file_atomically(&path, &payload)
             .await
             .map_err(|error| WorkspaceError::WriteManifest {
                 path,
@@ -1065,7 +1065,7 @@ impl WorkspaceManager {
         }
         let path = self.validate_workspace_owned_path(workspace, path).await?;
 
-        fs::write(&path, payload)
+        write_file_atomically(&path, payload)
             .await
             .map_err(|error| WorkspaceError::WriteArtifact {
                 path,
@@ -1330,6 +1330,28 @@ fn ensure_descendant(root: &Path, candidate: &Path) -> Result<(), WorkspaceError
             root: root.to_path_buf(),
             path: candidate.to_path_buf(),
         })
+    }
+}
+
+/// Write via a sibling temp file plus rename so a crash mid-write can never
+/// leave a truncated manifest behind — recovery reads these files after
+/// exactly the kind of crash that would otherwise corrupt them.
+async fn write_file_atomically(path: &Path, payload: &[u8]) -> io::Result<()> {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "manifest".to_string());
+    let temp_path = path.with_file_name(format!(
+        ".{file_name}.tmp-{}",
+        std::process::id()
+    ));
+    fs::write(&temp_path, payload).await?;
+    match fs::rename(&temp_path, path).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&temp_path).await;
+            Err(error)
+        }
     }
 }
 

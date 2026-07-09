@@ -394,7 +394,10 @@ fn resolve_state_limits(
                 message: "state limits must be greater than zero".to_owned(),
             });
         }
-        resolved.insert(state.to_lowercase(), parsed as u64);
+        // Must match the scheduler's `normalized_state_name` (ASCII
+        // lowercasing); Unicode lowercasing here would make non-ASCII state
+        // names never match their configured limit.
+        resolved.insert(state.to_ascii_lowercase(), parsed as u64);
     }
 
     Ok(resolved)

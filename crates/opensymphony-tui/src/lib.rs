@@ -1646,7 +1646,21 @@ impl TuiState {
     }
 
     fn move_conversation_scroll_up(&mut self) {
-        self.conversation_scroll_offset = self.conversation_scroll_offset.saturating_add(1);
+        // The exact rendered line count depends on the terminal width, which
+        // is unknown here, so bound the offset by the worst-case wrap of the
+        // recent events (summaries are capped at TUI_CONVERSATION_TEXT_LIMIT
+        // chars and the pane is never narrower than MIN_TUI_WIDTH). Without a
+        // bound, holding Up pins the view at the top while the offset grows
+        // unboundedly, and scrolling back down appears broken.
+        let event_count = self
+            .selected_issue()
+            .map(|issue| issue.recent_events.len())
+            .unwrap_or(0);
+        let max_lines_per_event =
+            1 + TUI_CONVERSATION_TEXT_LIMIT.div_ceil(MIN_TUI_WIDTH as usize);
+        let max_offset = event_count.saturating_mul(max_lines_per_event);
+        self.conversation_scroll_offset =
+            min(self.conversation_scroll_offset.saturating_add(1), max_offset);
     }
 
     fn move_conversation_scroll_down(&mut self) {
@@ -2871,8 +2885,16 @@ fn workspace_path_for_issue(
     snapshot: &SnapshotEnvelope,
     workspace_suffix: &str,
 ) -> Option<PathBuf> {
+    // Require exactly one *normal* component: `..` (ParentDir) and `/`
+    // (RootDir) are single components too, and either would escape the
+    // workspace root — `Path::join("/")` even replaces the base entirely.
     let candidate = PathBuf::from(workspace_suffix);
-    if candidate.components().count() != 1 {
+    let mut components = candidate.components();
+    if !matches!(
+        components.next(),
+        Some(std::path::Component::Normal(_))
+    ) || components.next().is_some()
+    {
         return None;
     }
 

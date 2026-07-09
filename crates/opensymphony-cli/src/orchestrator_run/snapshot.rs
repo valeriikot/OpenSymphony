@@ -104,7 +104,12 @@ fn map_issue(
             Some(
                 WorkerOutcomeKind::Failed
                 | WorkerOutcomeKind::TimedOut
-                | WorkerOutcomeKind::Stalled,
+                | WorkerOutcomeKind::Stalled
+                // Detached and CancelFailed are terminal failures (the
+                // scheduler releases them without retry); showing them as
+                // Completed contradicts the Failed outcome column.
+                | WorkerOutcomeKind::Detached
+                | WorkerOutcomeKind::CancelFailed,
             ) => IssueRuntimeState::Failed,
             _ => IssueRuntimeState::Completed,
         },
@@ -363,25 +368,35 @@ pub(super) fn current_agent_server_status(
     supervisor: &mut Option<LocalServerSupervisor>,
     base_url: &str,
 ) -> AgentServerStatus {
-    if let Some(supervisor) = supervisor.as_mut()
-        && let Ok(status) = supervisor.status()
-    {
-        return AgentServerStatus {
-            reachable: matches!(
-                status.state,
-                crate::opensymphony_openhands::ServerState::Ready
-            ),
-            base_url: status.base_url,
-            conversation_count: 0,
-            status_line: format!("{:?}", status.state).to_ascii_lowercase(),
+    if let Some(supervisor) = supervisor.as_mut() {
+        return match supervisor.status() {
+            Ok(status) => AgentServerStatus {
+                reachable: matches!(
+                    status.state,
+                    crate::opensymphony_openhands::ServerState::Ready
+                ),
+                base_url: status.base_url,
+                conversation_count: 0,
+                status_line: format!("{:?}", status.state).to_ascii_lowercase(),
+            },
+            // A failed status probe must not fail open to "reachable" while
+            // workers are unable to launch.
+            Err(error) => AgentServerStatus {
+                reachable: false,
+                base_url: base_url.to_string(),
+                conversation_count: 0,
+                status_line: format!("status probe failed: {error}"),
+            },
         };
     }
 
+    // Non-supervised transports are not probed; report the assumption
+    // instead of claiming a verified "reachable".
     AgentServerStatus {
         reachable: true,
         base_url: base_url.to_string(),
         conversation_count: 0,
-        status_line: "reachable".to_string(),
+        status_line: "assumed reachable (unsupervised transport)".to_string(),
     }
 }
 
@@ -426,10 +441,13 @@ fn map_daemon_state(health: HealthStatus) -> DaemonState {
 }
 
 fn suffix(value: &str) -> String {
-    if value.len() <= 8 {
+    // Slice on char boundaries: a multibyte character straddling the cut
+    // point would otherwise panic.
+    let chars = value.chars().count();
+    if chars <= 8 {
         value.to_string()
     } else {
-        value[value.len() - 8..].to_string()
+        value.chars().skip(chars - 8).collect()
     }
 }
 

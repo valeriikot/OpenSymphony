@@ -72,6 +72,7 @@ mod tests {
                 id: must(IssueId::new("lin_261")),
                 identifier: must(IssueIdentifier::new("COE-261")),
                 state: "Done".to_owned(),
+                state_kind: None,
             }],
             created_at: None,
             updated_at: None,

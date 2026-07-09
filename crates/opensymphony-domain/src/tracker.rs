@@ -105,10 +105,22 @@ pub struct TrackerIssueRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     pub state: String,
+    /// Tracker-provided state kind. Trackers such as Jira classify statuses
+    /// by category rather than by well-known names, so terminality must not
+    /// depend solely on the configured state-name list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_kind: Option<TrackerIssueStateKind>,
 }
 
 impl TrackerIssueRef {
     pub fn is_terminal(&self, terminal_states: &HashSet<String>) -> bool {
+        if self
+            .state_kind
+            .as_ref()
+            .is_some_and(TrackerIssueStateKind::is_terminal)
+        {
+            return true;
+        }
         let state = self.state.trim();
         terminal_states
             .iter()
@@ -256,9 +268,20 @@ mod tests {
             title: None,
             url: None,
             state: "done".to_string(),
+            state_kind: None,
         };
         let terminal_states = HashSet::from([String::from("Done"), String::from("Canceled")]);
 
         assert!(issue.is_terminal(&terminal_states));
+
+        let kind_only = TrackerIssueRef {
+            id: "issue-2".to_string(),
+            identifier: "COE-2".to_string(),
+            title: None,
+            url: None,
+            state: "Resolved".to_string(),
+            state_kind: Some(TrackerIssueStateKind::Completed),
+        };
+        assert!(kind_only.is_terminal(&terminal_states));
     }
 }

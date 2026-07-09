@@ -377,13 +377,15 @@ impl JiraClient {
             let fetched = response.issues.len();
             issues.extend(response.issues);
 
+            let _ = fetched;
             match response.next_page_token {
                 Some(token) => {
                     // The enhanced search endpoint may return a short or even
                     // empty page while more results remain; keep following the
-                    // token. A repeated token would mean the server is not
-                    // advancing, so stop rather than spin forever.
-                    if fetched == 0 && next_page_token.as_deref() == Some(token.as_str()) {
+                    // token. A repeated token means the server is not
+                    // advancing — stop rather than spin (and accumulate
+                    // duplicates) forever, regardless of the page size.
+                    if next_page_token.as_deref() == Some(token.as_str()) {
                         return Ok(issues);
                     }
                     next_page_token = Some(token);
@@ -567,12 +569,15 @@ fn normalize_strings<S>(values: &[S]) -> Vec<String>
 where
     S: AsRef<str>,
 {
-    let mut normalized = values
-        .iter()
-        .map(|value| value.as_ref().trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    normalized.dedup();
+    // Dedupe across the whole list (not just adjacent entries) so a repeated
+    // identifier is fetched once instead of producing duplicate issues.
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.as_ref().trim();
+        if !value.is_empty() && !normalized.iter().any(|existing| existing == value) {
+            normalized.push(value.to_string());
+        }
+    }
     normalized
 }
 

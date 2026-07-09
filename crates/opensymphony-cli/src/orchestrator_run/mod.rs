@@ -18,7 +18,7 @@ use crate::opensymphony_orchestrator::{
     IssueStateCategory, OrchestratorSnapshot, Scheduler, SchedulerConfig, SchedulerError,
     TrackerBackend, WorkerBackend, WorkspaceBackend,
 };
-use crate::opensymphony_workflow::ProcessEnvironment;
+use crate::opensymphony_workflow::{ProcessEnvironment, TrackerKind};
 use crate::opensymphony_workspace::WorkspaceError;
 use chrono::{DateTime, Utc};
 use clap::Args;
@@ -521,6 +521,12 @@ struct LinearOAuthTokenResponse {
 async fn apply_linear_oauth_client_credentials(
     runtime: &mut RunRuntimeConfig,
 ) -> Result<BTreeMap<String, String>, RunCommandError> {
+    // Linear OAuth credentials exported in the shell must not clobber the
+    // resolved Jira/Vikunja token (or fail startup when the Linear token
+    // endpoint is unreachable) for workflows that do not use Linear at all.
+    if runtime.workflow.config.tracker.kind != TrackerKind::Linear {
+        return Ok(BTreeMap::new());
+    }
     let Some((client_id, client_secret)) = linear_oauth_credentials_from_env() else {
         return Ok(BTreeMap::new());
     };

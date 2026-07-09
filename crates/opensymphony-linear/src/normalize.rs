@@ -160,6 +160,7 @@ fn normalize_parent(parent: Option<LinearParentNode>) -> Option<TrackerIssueRef>
             .state
             .map(|state| state.name)
             .unwrap_or_else(|| "unknown".to_string()),
+        state_kind: None,
     })
 }
 
@@ -181,6 +182,7 @@ fn normalize_sub_issues(children: Vec<LinearChildNode>) -> Vec<TrackerIssueRef> 
             title: child.title,
             url: child.url,
             state: child.state.name,
+            state_kind: None,
         })
         .collect::<Vec<_>>();
     sub_issues.sort_by(|left, right| left.identifier.cmp(&right.identifier));
