@@ -690,7 +690,7 @@ impl LinearClient {
     ) -> Result<LinearMilestoneMutationResult, LinearError> {
         let variables = ProjectMilestoneCreateVariables { input };
         let response: ProjectMilestoneCreateData = self
-            .execute_graphql(PROJECT_MILESTONE_CREATE_MUTATION, json!(variables))
+            .execute_graphql_creation(PROJECT_MILESTONE_CREATE_MUTATION, json!(variables))
             .await?;
         Self::milestone_mutation_result("projectMilestoneCreate", response.project_milestone_create)
     }
@@ -740,7 +740,7 @@ impl LinearClient {
         Self::validate_issue_create_input(&input)?;
         let variables = IssueCreateVariables { input };
         let response: IssueCreateData = self
-            .execute_graphql(ISSUE_CREATE_MUTATION, json!(variables))
+            .execute_graphql_creation(ISSUE_CREATE_MUTATION, json!(variables))
             .await?;
         Self::issue_mutation_result("issueCreate", response.issue_create)
     }
@@ -799,7 +799,7 @@ impl LinearClient {
         };
         let variables = CommentCreateVariables { input };
         let response: CommentCreateData = self
-            .execute_graphql(COMMENT_CREATE_MUTATION, json!(variables))
+            .execute_graphql_creation(COMMENT_CREATE_MUTATION, json!(variables))
             .await?;
         if !response.comment_create.success {
             return Err(LinearError::InvalidResponse(
@@ -831,7 +831,7 @@ impl LinearClient {
         };
         let variables = IssueRelationCreateVariables { input };
         let response: IssueRelationCreateData = self
-            .execute_graphql(ISSUE_RELATION_CREATE_MUTATION, json!(variables))
+            .execute_graphql_creation(ISSUE_RELATION_CREATE_MUTATION, json!(variables))
             .await?;
         if !response.issue_relation_create.success {
             return Err(LinearError::InvalidResponse(
@@ -946,6 +946,34 @@ impl LinearClient {
     where
         T: DeserializeOwned,
     {
+        self.execute_graphql_inner(query, variables, true).await
+    }
+
+    /// Like [`Self::execute_graphql`] but for non-idempotent mutations:
+    /// ambiguous failures (transport errors, timeouts, 5xx) are NOT retried,
+    /// because the server may already have applied the mutation and a retry
+    /// would create duplicate issues/comments. Rate-limited responses are
+    /// still retried — a 429 means the mutation was rejected unprocessed.
+    pub(super) async fn execute_graphql_creation<T>(
+        &self,
+        query: &'static str,
+        variables: Value,
+    ) -> Result<T, LinearError>
+    where
+        T: DeserializeOwned,
+    {
+        self.execute_graphql_inner(query, variables, false).await
+    }
+
+    async fn execute_graphql_inner<T>(
+        &self,
+        query: &'static str,
+        variables: Value,
+        retry_ambiguous_failures: bool,
+    ) -> Result<T, LinearError>
+    where
+        T: DeserializeOwned,
+    {
         let body = json!({
             "query": query,
             "variables": variables,
@@ -980,7 +1008,7 @@ impl LinearClient {
                                 retry_after,
                                 source: Box::new(error),
                             };
-                            if self.should_retry(&error, attempt) {
+                            if self.should_retry(&error, attempt, retry_ambiguous_failures) {
                                 self.sleep_before_retry(&error, attempt).await;
                                 attempt += 1;
                                 continue;
@@ -995,7 +1023,7 @@ impl LinearClient {
                             body: payload,
                             retry_after,
                         };
-                        if self.should_retry(&error, attempt) {
+                        if self.should_retry(&error, attempt, retry_ambiguous_failures) {
                             self.sleep_before_retry(&error, attempt).await;
                             attempt += 1;
                             continue;
@@ -1004,7 +1032,7 @@ impl LinearClient {
                     }
 
                     if let Some(error) = decode_graphql_error_response(&payload, retry_after) {
-                        if self.should_retry(&error, attempt) {
+                        if self.should_retry(&error, attempt, retry_ambiguous_failures) {
                             self.sleep_before_retry(&error, attempt).await;
                             attempt += 1;
                             continue;
@@ -1018,7 +1046,7 @@ impl LinearClient {
                             body: payload,
                             retry_after,
                         };
-                        if self.should_retry(&error, attempt) {
+                        if self.should_retry(&error, attempt, retry_ambiguous_failures) {
                             self.sleep_before_retry(&error, attempt).await;
                             attempt += 1;
                             continue;
@@ -1039,7 +1067,7 @@ impl LinearClient {
                             convert_graphql_errors(errors),
                             retry_after,
                         );
-                        if self.should_retry(&error, attempt) {
+                        if self.should_retry(&error, attempt, retry_ambiguous_failures) {
                             self.sleep_before_retry(&error, attempt).await;
                             attempt += 1;
                             continue;
@@ -1058,7 +1086,7 @@ impl LinearClient {
                 }
                 Err(error) => {
                     let error = LinearError::Request(Box::new(error));
-                    if self.should_retry(&error, attempt) {
+                    if self.should_retry(&error, attempt, retry_ambiguous_failures) {
                         self.sleep_before_retry(&error, attempt).await;
                         attempt += 1;
                         continue;
@@ -1069,7 +1097,12 @@ impl LinearClient {
         }
     }
 
-    fn should_retry(&self, error: &LinearError, attempt: usize) -> bool {
+    fn should_retry(
+        &self,
+        error: &LinearError,
+        attempt: usize,
+        retry_ambiguous_failures: bool,
+    ) -> bool {
         if attempt >= self.config.retry_policy.max_attempts {
             return false;
         }
@@ -1087,10 +1120,13 @@ impl LinearClient {
         }
 
         match error {
-            LinearError::Request(_) => true,
-            LinearError::ResponseBody { .. } => true,
+            // Transport failures and 5xx responses are ambiguous: the server
+            // may have processed the request before the connection died.
+            LinearError::Request(_) => retry_ambiguous_failures,
+            LinearError::ResponseBody { .. } => retry_ambiguous_failures,
             LinearError::HttpStatus { status, .. } => {
-                *status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                *status == StatusCode::TOO_MANY_REQUESTS
+                    || (status.is_server_error() && retry_ambiguous_failures)
             }
             LinearError::Graphql { .. } => error.is_rate_limited(),
             LinearError::MissingIssueIds { .. }

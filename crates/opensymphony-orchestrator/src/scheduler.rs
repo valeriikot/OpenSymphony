@@ -1365,6 +1365,31 @@ where
                 Err(_) => true,
             })
             .collect::<Vec<_>>();
+        // Drop state-capped candidates before taking the capacity window,
+        // mirroring the per-state check in `dispatch_ready_issues`: a capped
+        // candidate that occupies the window would otherwise starve
+        // dispatchable lower-priority issues for as long as its state stays
+        // at the limit.
+        let mut planned_by_state: HashMap<String, usize> = HashMap::new();
+        let ready = ready
+            .into_iter()
+            .filter(|summary| {
+                let state_key = normalized_state_name(&summary.state);
+                let Some(limit) =
+                    state_limit_for(&self.config.max_concurrent_agents_by_state, &state_key)
+                else {
+                    return true;
+                };
+                let planned = planned_by_state.entry(state_key.clone()).or_default();
+                let running = self.running_count_for_normalized_state(&state_key);
+                if running + *planned >= usize::try_from(limit).unwrap_or(usize::MAX) {
+                    false
+                } else {
+                    *planned += 1;
+                    true
+                }
+            })
+            .collect::<Vec<_>>();
         let available_capacity = usize::try_from(self.config.max_concurrent_agents)
             .unwrap_or(usize::MAX)
             .saturating_sub(self.worker_metadata.len());
@@ -1484,13 +1509,22 @@ where
                 }
             }
 
-            let workspace = self
-                .workspace
-                .ensure_workspace(&normalized, observed_at)
-                .await
-                .map_err(|error| SchedulerError::Workspace {
-                    detail: error.to_string(),
-                })?;
+            // A workspace failure for one candidate must not abort the whole
+            // dispatch batch: candidates already claimed into
+            // `pending_launches` were removed from `executions` and would be
+            // dropped (losing their retry counters) if we propagated here.
+            let workspace = match self.workspace.ensure_workspace(&normalized, observed_at).await
+            {
+                Ok(workspace) => workspace,
+                Err(error) => {
+                    warn!(
+                        issue_id = %issue_id,
+                        error = %error,
+                        "skipping dispatch candidate after workspace preparation failed"
+                    );
+                    continue;
+                }
+            };
 
             let issue_id = normalized.id.clone();
             let worker_id = self.next_worker_id()?;
@@ -1513,9 +1547,31 @@ where
             let mut execution = self
                 .remove_execution(&issue_id)
                 .unwrap_or_else(|| IssueExecution::new(normalized.clone(), observed_at));
-            execution.refresh_issue(normalized.clone())?;
-            execution.attach_workspace(workspace.clone())?;
-            execution = execution.claim(run.clone())?;
+            // Transition errors put the (unclaimed) execution back and skip
+            // the candidate instead of dropping it and aborting the batch.
+            let refresh_result = execution
+                .refresh_issue(normalized.clone())
+                .and_then(|()| execution.attach_workspace(workspace.clone()));
+            if let Err(error) = refresh_result {
+                warn!(
+                    issue_id = %issue_id,
+                    error = %error,
+                    "skipping dispatch candidate after execution refresh failed"
+                );
+                self.insert_execution(issue_id, execution);
+                continue;
+            }
+            execution = match execution.claim(run.clone()) {
+                Ok(execution) => execution,
+                Err(error) => {
+                    warn!(
+                        issue_id = %issue_id,
+                        error = %error,
+                        "skipping dispatch candidate that could not be claimed"
+                    );
+                    continue;
+                }
+            };
             let claimed_run = execution
                 .current_run()
                 .cloned()
@@ -1700,8 +1756,16 @@ where
                 continue;
             };
 
-            self.abort_worker(&run.worker_id, WorkerAbortReason::Stalled)
-                .await?;
+            if let Err(error) = self
+                .abort_worker(&run.worker_id, WorkerAbortReason::Stalled)
+                .await
+            {
+                // Keep the execution tracked so the abort is retried on the
+                // next tick; dropping it here would orphan the live worker
+                // and let dispatch discovery start a second one.
+                self.insert_execution(issue_id, execution);
+                return Err(error);
+            }
             let outcome = WorkerOutcomeRecord::from_run(
                 &run,
                 WorkerOutcomeKind::Stalled,
@@ -1762,22 +1826,31 @@ where
             return Ok(());
         };
 
-        execution.refresh_issue(issue)?;
+        // Reinsert the execution before propagating any error: dropping it
+        // would erase retry counters and, when a worker is still attached,
+        // orphan a live run while dispatch discovery starts a second one.
+        if let Err(error) = execution.refresh_issue(issue) {
+            self.insert_execution(issue_id, execution);
+            return Err(error.into());
+        }
         if let Some(run) = execution.current_run().cloned()
             && let Some(abort_reason) = abort_reason
         {
-            self.abort_worker(&run.worker_id, abort_reason).await?;
+            if let Err(error) = self.abort_worker(&run.worker_id, abort_reason).await {
+                self.insert_execution(issue_id, execution);
+                return Err(error);
+            }
         }
         if execution.status() != SchedulerStatus::Released {
             execution = execution.release(observed_at, reason, None)?;
         }
         if cleanup_terminal && let Some(workspace) = execution.workspace().cloned() {
-            self.workspace
-                .cleanup_workspace(&workspace, true)
-                .await
-                .map_err(|error| SchedulerError::Workspace {
+            if let Err(error) = self.workspace.cleanup_workspace(&workspace, true).await {
+                self.insert_execution(issue_id, execution);
+                return Err(SchedulerError::Workspace {
                     detail: error.to_string(),
-                })?;
+                });
+            }
         }
         self.insert_execution(issue_id, execution);
         Ok(())
@@ -1838,20 +1911,41 @@ where
         }
 
         let issue_id = execution.issue().id.clone();
-        if let Some(state) = self
+        match self
             .refresh_finished_issue_state(&issue_id, observed_at)
             .await
         {
-            let mut issue = execution.issue().clone();
-            issue.state = state;
-            execution.refresh_issue(issue)?;
-            if let Some(reason) =
-                non_active_release_reason(execution.issue().state.category.clone())
-            {
+            FinishedIssueState::Refreshed(state) => {
+                let mut issue = execution.issue().clone();
+                issue.state = state;
+                execution.refresh_issue(issue)?;
+                if let Some(reason) =
+                    non_active_release_reason(execution.issue().state.category.clone())
+                {
+                    return self
+                        .release_finished_execution(execution, observed_at, reason, Some(outcome))
+                        .await;
+                }
+            }
+            FinishedIssueState::Missing => {
+                // The tracker answered but no longer knows the id: the issue
+                // was deleted mid-run. Queuing a retry here would redispatch
+                // it forever, because no future state refresh can ever
+                // confirm or release it.
+                warn!(
+                    issue_id = %issue_id,
+                    "issue disappeared from the tracker; releasing instead of retrying"
+                );
                 return self
-                    .release_finished_execution(execution, observed_at, reason, Some(outcome))
+                    .release_finished_execution(
+                        execution,
+                        observed_at,
+                        ReleaseReason::TrackerInactive,
+                        Some(outcome),
+                    )
                     .await;
             }
+            FinishedIssueState::Unavailable => {}
         }
 
         self.queue_retry_for_outcome(execution, outcome, observed_at)
@@ -1861,7 +1955,7 @@ where
         &mut self,
         issue_id: &IssueId,
         observed_at: TimestampMs,
-    ) -> Option<IssueState> {
+    ) -> FinishedIssueState {
         let issue_ids = vec![issue_id.as_str().to_string()];
         let snapshots = match self.tracker.issue_states_by_ids(&issue_ids).await {
             Ok(snapshots) => snapshots,
@@ -1872,14 +1966,17 @@ where
                     %error,
                     "failed to refresh tracker state after worker finished; falling back to retry policy"
                 );
-                return None;
+                return FinishedIssueState::Unavailable;
             }
         };
 
-        snapshots
-            .into_iter()
-            .next()
-            .map(|snapshot| issue_state_from_name(&snapshot.state.name, &self.config))
+        match snapshots.into_iter().next() {
+            Some(snapshot) => FinishedIssueState::Refreshed(issue_state_from_name(
+                &snapshot.state.name,
+                &self.config,
+            )),
+            None => FinishedIssueState::Missing,
+        }
     }
 
     async fn release_finished_execution(
@@ -2126,6 +2223,7 @@ fn normalize_tracker_issue(
                     id: IssueId::new(child.id.clone())?,
                     identifier: IssueIdentifier::new(child.identifier.clone())?,
                     state: child.state.clone(),
+                    state_kind: child.state_kind.clone(),
                 })
             })
             .collect::<Result<Vec<_>, SchedulerError>>()?,
@@ -2241,6 +2339,16 @@ fn tracker_merging_interrupt_cancelled(
         })
 }
 
+/// Outcome of re-reading a finished issue's tracker state.
+enum FinishedIssueState {
+    /// The tracker returned a state for the issue.
+    Refreshed(IssueState),
+    /// The tracker answered but the id is gone (issue deleted mid-run).
+    Missing,
+    /// The tracker could not be reached; the state is unknown.
+    Unavailable,
+}
+
 fn normalized_state_set(states: &[String]) -> HashSet<String> {
     states
         .iter()
@@ -2341,6 +2449,7 @@ fn tracker_issue_from_normalized(issue: &NormalizedIssue) -> TrackerIssue {
                 title: None,
                 url: None,
                 state: child.state.clone(),
+                state_kind: child.state_kind.clone(),
             })
             .collect(),
         created_at: timestamp_to_datetime(issue.created_at),

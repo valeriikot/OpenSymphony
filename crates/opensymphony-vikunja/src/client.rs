@@ -253,7 +253,6 @@ impl VikunjaClient {
         }
 
         let mut snapshots = Vec::new();
-        let mut missing_issue_ids = Vec::new();
         for issue_id in &issue_ids {
             let issue_id = validate_task_id(issue_id)?;
             match self
@@ -265,21 +264,19 @@ impl VikunjaClient {
                 .await
             {
                 Ok(task) => snapshots.push(normalize_task_state(task)?),
+                // Deleted tasks are omitted rather than failing the whole
+                // refresh, matching the Linear and Jira state-refresh
+                // contract the scheduler relies on for cross-project
+                // recovery.
                 Err(VikunjaError::HttpStatus {
                     status: StatusCode::NOT_FOUND,
                     ..
-                }) => missing_issue_ids.push(issue_id.to_string()),
+                }) => continue,
                 Err(error) => return Err(error),
             }
         }
 
-        if missing_issue_ids.is_empty() {
-            Ok(snapshots)
-        } else {
-            Err(VikunjaError::MissingIssueIds {
-                issue_ids: missing_issue_ids,
-            })
-        }
+        Ok(snapshots)
     }
 
     pub async fn fetch_workpad_comment(
@@ -321,8 +318,13 @@ impl VikunjaClient {
 
     async fn project_tasks(&self) -> Result<Vec<VikunjaTask>, VikunjaError> {
         let mut tasks = Vec::new();
+        let mut seen_task_ids = std::collections::HashSet::new();
         let mut page = 1usize;
 
+        // Vikunja clamps `per_page` to the server's `service.maxitemsperpage`
+        // setting, so a short page does NOT mean the listing is complete.
+        // Keep paging until a page yields nothing new; that also terminates
+        // when a misbehaving server keeps replaying the same page.
         loop {
             let path = format!(
                 "/api/v1/projects/{}/tasks?page={page}&per_page={}",
@@ -331,9 +333,14 @@ impl VikunjaClient {
             let batch: Vec<VikunjaTask> = self
                 .execute(Method::GET, &path, "project tasks")
                 .await?;
-            let fetched = batch.len();
-            tasks.extend(batch);
-            if fetched < self.config.page_size {
+            let mut fetched_new = 0usize;
+            for task in batch {
+                if seen_task_ids.insert(task.id) {
+                    tasks.push(task);
+                    fetched_new += 1;
+                }
+            }
+            if fetched_new == 0 {
                 return Ok(tasks);
             }
             page += 1;
@@ -491,12 +498,16 @@ fn normalize_strings<S>(values: &[S]) -> Vec<String>
 where
     S: AsRef<str>,
 {
-    let mut normalized = values
-        .iter()
-        .map(|value| value.as_ref().trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    normalized.dedup();
+    // Dedupe across the whole list (not just adjacent entries) so a repeated
+    // identifier cannot be reported as missing after its first lookup
+    // consumes the match.
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.as_ref().trim();
+        if !value.is_empty() && !normalized.iter().any(|existing| existing == value) {
+            normalized.push(value.to_string());
+        }
+    }
     normalized
 }
 

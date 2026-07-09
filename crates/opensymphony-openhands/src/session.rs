@@ -2723,7 +2723,12 @@ impl IssueSessionRunner {
                 }
                 Ok(Ok(Some(event))) => {
                     observe_event(observer, &event);
-                    tracker.record_event(timestamp_ms_from_datetime(event.timestamp));
+                    // Record the local arrival time, not the server-stamped
+                    // event time: every other liveness timestamp uses the
+                    // local clock, and a server clock behind the orchestrator
+                    // by more than the stall timeout would otherwise mark an
+                    // actively-streaming run as stalled.
+                    tracker.record_event(timestamp_ms_from_datetime(Utc::now()));
                     if let Some(status) = session.stream.state_mirror().execution_status() {
                         tracker
                             .record_status_change(status, timestamp_ms_from_datetime(Utc::now()));
@@ -3913,6 +3918,7 @@ mod tests {
                 id: must(IssueId::new("issue-101")),
                 identifier: must(IssueIdentifier::new("COE-101")),
                 state: "Done".to_string(),
+                state_kind: None,
             }],
             created_at: None,
             updated_at: None,

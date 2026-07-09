@@ -190,6 +190,7 @@ fn tracker_issue_ref_from_tracker(issue: &TrackerIssue) -> TrackerIssueRef {
         title: Some(issue.title.clone()),
         url: Some(issue.url.clone()),
         state: issue.state.clone(),
+        state_kind: None,
     }
 }
 
@@ -200,6 +201,7 @@ fn tracker_issue_ref_from_identifier(identifier: &str) -> TrackerIssueRef {
         title: Some(format!("External {identifier}")),
         url: None,
         state: "Todo".to_owned(),
+        state_kind: None,
     }
 }
 

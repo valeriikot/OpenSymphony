@@ -37,6 +37,10 @@ pub struct IssueRef {
     pub id: IssueId,
     pub identifier: IssueIdentifier,
     pub state: String,
+    /// Tracker-provided state kind, preserved through normalization so
+    /// round-trips do not have to re-derive terminality from the state name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_kind: Option<TrackerIssueStateKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -275,7 +275,15 @@ impl IssueExecution {
             return Err(StateTransitionError::ConversationNotAttached);
         };
         if let Some(interrupt) = &self.interrupt {
-            return Ok((interrupt.command.clone(), false));
+            // A pending interrupt is idempotent, but a Failed/TimedOut one
+            // must not block retries — otherwise one transport error makes
+            // the run permanently uncancellable.
+            match interrupt.status {
+                HarnessInterruptStatus::Requested | HarnessInterruptStatus::Acknowledged => {
+                    return Ok((interrupt.command.clone(), false));
+                }
+                HarnessInterruptStatus::Failed | HarnessInterruptStatus::TimedOut => {}
+            }
         }
 
         self.interrupt = Some(HarnessInterruptState::requested(

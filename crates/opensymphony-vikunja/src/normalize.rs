@@ -190,6 +190,7 @@ fn issue_ref_from_related(related: &VikunjaRelatedTask, base_url: &str) -> Track
         identifier: normalize_identifier(&related.identifier, related.index),
         url: Some(task_url(base_url, related.id)),
         state: state_name_for(related.done).to_string(),
+        state_kind: Some(state_for(related.done).kind),
     }
 }
 

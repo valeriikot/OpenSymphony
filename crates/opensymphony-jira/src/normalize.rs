@@ -167,18 +167,22 @@ fn normalize_sub_issues(subtasks: Vec<JiraIssueStub>, site_base: &str) -> Vec<Tr
 
 fn issue_ref_from_stub(stub: JiraIssueStub, site_base: &str) -> TrackerIssueRef {
     let url = browse_url(site_base, &stub.key);
-    let state = stub
+    let status = stub
         .fields
         .as_ref()
         .and_then(|fields| fields.status.as_ref())
-        .map(|status| status.name.clone())
-        .unwrap_or_else(|| "unknown".to_string());
+        .map(normalize_state);
+    let (state, state_kind) = match status {
+        Some(status) => (status.name, Some(status.kind)),
+        None => ("unknown".to_string(), None),
+    };
     TrackerIssueRef {
         title: stub.fields.and_then(|fields| fields.summary),
         id: stub.id,
         identifier: stub.key,
         url: Some(url),
         state,
+        state_kind,
     }
 }
 

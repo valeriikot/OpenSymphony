@@ -3035,9 +3035,11 @@ async fn get_run_events(
             );
         }
     };
+    // Producer sequences start at 0, so the first page must include
+    // sequence 0 or the first event of every run is unreachable.
     let start_sequence = match query.page_token.as_deref().or(query.cursor.as_deref()) {
         Some(token) => match token.parse::<u64>() {
-            Ok(sequence) => sequence.max(1),
+            Ok(sequence) => sequence,
             Err(_) => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -3050,7 +3052,7 @@ async fn get_run_events(
                 );
             }
         },
-        None => 1,
+        None => 0,
     };
     let page_size = query
         .page_size
@@ -3280,15 +3282,20 @@ fn parse_unified_diff(file_path: &str, diff_text: &str) -> Vec<DiffHunk> {
                 });
                 continue;
             }
-            let (prefix, content) = line.split_at(1);
+            // Classify by the first character without byte-slicing: a stray
+            // line starting with a multibyte character must be skipped, not
+            // panic on a non-char-boundary split.
+            let mut chars = line.chars();
+            let prefix = chars.next().expect("line is non-empty");
+            let content = chars.as_str();
             match prefix {
-                " " => current_lines.push(DiffLine::Context {
+                ' ' => current_lines.push(DiffLine::Context {
                     line: content.to_owned(),
                 }),
-                "+" => current_lines.push(DiffLine::Addition {
+                '+' => current_lines.push(DiffLine::Addition {
                     line: content.to_owned(),
                 }),
-                "-" => current_lines.push(DiffLine::Deletion {
+                '-' => current_lines.push(DiffLine::Deletion {
                     line: content.to_owned(),
                 }),
                 _ => {

@@ -140,6 +140,7 @@ fn normalized_issue(id: &str, identifier: &str, state: &str) -> NormalizedIssue 
             identifier: IssueIdentifier::new(format!("{identifier}-child"))
                 .expect("child identifier should be valid"),
             state: "Done".to_string(),
+            state_kind: None,
         }],
         created_at: Some(ts(0)),
         updated_at: Some(ts(0)),

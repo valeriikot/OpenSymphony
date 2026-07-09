@@ -583,6 +583,12 @@ impl RuntimeEventStream {
             }
 
             if self.socket.is_none() && self.pending_events.is_empty() && !self.reconnect_pending {
+                // The stream is permanently disconnected (reconnect backoff
+                // exhausted). Callers treat `Ok(None)` as "reconcile over
+                // HTTP and retry", so pace them — otherwise this degenerates
+                // into a zero-delay full-history polling loop against the
+                // server for the rest of the run.
+                sleep(self.config.reconnect_initial_backoff).await;
                 return Ok(None);
             }
         }
