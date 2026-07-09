@@ -1911,41 +1911,24 @@ where
         }
 
         let issue_id = execution.issue().id.clone();
-        match self
+        // NOTE: an id omitted from the state-refresh response is NOT treated
+        // as "deleted": the Linear query is project-scoped, and omission is
+        // the pinned cross-project-recovery contract. Fall back to the retry
+        // policy instead of releasing.
+        if let Some(state) = self
             .refresh_finished_issue_state(&issue_id, observed_at)
             .await
         {
-            FinishedIssueState::Refreshed(state) => {
-                let mut issue = execution.issue().clone();
-                issue.state = state;
-                execution.refresh_issue(issue)?;
-                if let Some(reason) =
-                    non_active_release_reason(execution.issue().state.category.clone())
-                {
-                    return self
-                        .release_finished_execution(execution, observed_at, reason, Some(outcome))
-                        .await;
-                }
-            }
-            FinishedIssueState::Missing => {
-                // The tracker answered but no longer knows the id: the issue
-                // was deleted mid-run. Queuing a retry here would redispatch
-                // it forever, because no future state refresh can ever
-                // confirm or release it.
-                warn!(
-                    issue_id = %issue_id,
-                    "issue disappeared from the tracker; releasing instead of retrying"
-                );
+            let mut issue = execution.issue().clone();
+            issue.state = state;
+            execution.refresh_issue(issue)?;
+            if let Some(reason) =
+                non_active_release_reason(execution.issue().state.category.clone())
+            {
                 return self
-                    .release_finished_execution(
-                        execution,
-                        observed_at,
-                        ReleaseReason::TrackerInactive,
-                        Some(outcome),
-                    )
+                    .release_finished_execution(execution, observed_at, reason, Some(outcome))
                     .await;
             }
-            FinishedIssueState::Unavailable => {}
         }
 
         self.queue_retry_for_outcome(execution, outcome, observed_at)
@@ -1955,7 +1938,7 @@ where
         &mut self,
         issue_id: &IssueId,
         observed_at: TimestampMs,
-    ) -> FinishedIssueState {
+    ) -> Option<IssueState> {
         let issue_ids = vec![issue_id.as_str().to_string()];
         let snapshots = match self.tracker.issue_states_by_ids(&issue_ids).await {
             Ok(snapshots) => snapshots,
@@ -1966,17 +1949,14 @@ where
                     %error,
                     "failed to refresh tracker state after worker finished; falling back to retry policy"
                 );
-                return FinishedIssueState::Unavailable;
+                return None;
             }
         };
 
-        match snapshots.into_iter().next() {
-            Some(snapshot) => FinishedIssueState::Refreshed(issue_state_from_name(
-                &snapshot.state.name,
-                &self.config,
-            )),
-            None => FinishedIssueState::Missing,
-        }
+        snapshots
+            .into_iter()
+            .next()
+            .map(|snapshot| issue_state_from_name(&snapshot.state.name, &self.config))
     }
 
     async fn release_finished_execution(
@@ -2337,16 +2317,6 @@ fn tracker_merging_interrupt_cancelled(
         && execution.interrupt().is_some_and(|interrupt| {
             interrupt.command.reason == HarnessInterruptReason::TrackerMergingSupersedesHumanReview
         })
-}
-
-/// Outcome of re-reading a finished issue's tracker state.
-enum FinishedIssueState {
-    /// The tracker returned a state for the issue.
-    Refreshed(IssueState),
-    /// The tracker answered but the id is gone (issue deleted mid-run).
-    Missing,
-    /// The tracker could not be reached; the state is unknown.
-    Unavailable,
 }
 
 fn normalized_state_set(states: &[String]) -> HashSet<String> {

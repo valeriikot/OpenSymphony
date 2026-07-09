@@ -52,9 +52,17 @@ pub(super) fn html_to_text(html: &str) -> Option<String> {
 /// lowercase tag name and the byte length of the whole `<...>` sequence.
 fn recognized_tag(input: &str) -> Option<(String, usize)> {
     let end = input.find('>')?;
-    let inner = input[1..end].trim();
-    let name = inner
-        .trim_start_matches('/')
+    let inner = &input[1..end];
+    // A tag name must immediately follow `<` (or `</`); `< b` is plain text.
+    let name_part = inner.strip_prefix('/').unwrap_or(inner);
+    if !name_part
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    let name = name_part
         .split([' ', '\t', '\n', '/'])
         .next()
         .unwrap_or_default()
