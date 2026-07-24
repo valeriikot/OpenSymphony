@@ -236,6 +236,13 @@ ephemeral loopback port, and workers receive the resulting MCP endpoint through
 `OPENSYMPHONY_MEMORY_ENDPOINT`. Workers receive only the normal read token;
 admin tools require a separate `OPENSYMPHONY_MEMORY_ADMIN_TOKEN`.
 
+Presented bearer tokens are compared in constant time. The server binds to
+loopback and rejects non-localhost `Origin` headers, but every local process can
+still reach it, so a short-circuiting comparison would let a caller that can
+time responses recover a token byte by byte. When both a read and an admin token
+are configured, both comparisons are evaluated so a read-token match does not
+short-circuit the admin one.
+
 Initialize the shared memory policy and learned ontology file once:
 
 ```bash

@@ -19,7 +19,10 @@ const RELATION_BLOCKED: &str = "blocked";
 const RELATION_SUBTASK: &str = "subtask";
 const RELATION_PARENT: &str = "parenttask";
 
-pub(super) fn normalize_task(task: VikunjaTask, base_url: &str) -> Result<TrackerIssue, VikunjaError> {
+pub(super) fn normalize_task(
+    task: VikunjaTask,
+    base_url: &str,
+) -> Result<TrackerIssue, VikunjaError> {
     let state = state_for(task.done);
     let identifier = normalize_identifier(&task.identifier, task.index);
     let related = task.related_tasks.unwrap_or_default();

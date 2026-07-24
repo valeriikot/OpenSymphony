@@ -11,7 +11,9 @@ use tracing::debug;
 
 use super::error::VikunjaError;
 use super::html::html_to_text;
-use super::normalize::{normalize_task, normalize_task_state, normalize_task_summary, parse_datetime};
+use super::normalize::{
+    normalize_task, normalize_task_state, normalize_task_summary, parse_datetime,
+};
 use super::rest::{VikunjaComment, VikunjaTask};
 
 const DEFAULT_PAGE_SIZE: usize = 50;
@@ -104,8 +106,7 @@ impl VikunjaClient {
             .trim_end_matches('/')
             .to_string();
         config.api_token = normalize_required_string("VIKUNJA_API_TOKEN", &config.api_token)?;
-        config.project_id =
-            normalize_required_string("tracker.project_slug", &config.project_id)?;
+        config.project_id = normalize_required_string("tracker.project_slug", &config.project_id)?;
         if !config.project_id.chars().all(|c| c.is_ascii_digit()) {
             return Err(VikunjaError::InvalidConfiguration(format!(
                 "tracker.project_slug must be a numeric Vikunja project id, got `{}`",
@@ -134,7 +135,9 @@ impl VikunjaClient {
         self.issues_by_state_names(&self.config.active_states).await
     }
 
-    pub async fn candidate_issue_summaries(&self) -> Result<Vec<TrackerIssueSummary>, VikunjaError> {
+    pub async fn candidate_issue_summaries(
+        &self,
+    ) -> Result<Vec<TrackerIssueSummary>, VikunjaError> {
         let active_states = self.config.active_states.clone();
         let tasks = self.tasks_by_state_names(&active_states).await?;
         tasks
@@ -284,36 +287,55 @@ impl VikunjaClient {
         issue_id: &str,
     ) -> Result<Option<WorkpadComment>, VikunjaError> {
         let issue_id = validate_task_id(issue_id)?;
-        let comments: Vec<VikunjaComment> = self
-            .execute(
-                Method::GET,
-                &format!("/api/v1/tasks/{issue_id}/comments"),
-                "task comments",
-            )
-            .await?;
-
         let mut latest: Option<WorkpadComment> = None;
-        for comment in comments {
-            let Some(body) = html_to_text(&comment.comment) else {
-                continue;
-            };
-            if !contains_workpad_marker(&body) {
-                continue;
+        let mut seen_comment_ids = std::collections::HashSet::new();
+        let mut page = 1usize;
+
+        // The comment listing is paginated exactly like the task listing, and
+        // Vikunja clamps `per_page` to the server's `service.maxitemsperpage`.
+        // Reading only the first page loses the workpad comment as soon as a
+        // task accumulates more comments than one page holds, which is the
+        // normal case for a long-running issue. Page until nothing new arrives,
+        // matching `project_tasks` and the Jira comment contract.
+        loop {
+            let path = format!(
+                "/api/v1/tasks/{issue_id}/comments?page={page}&per_page={}",
+                self.config.page_size
+            );
+            let comments: Vec<VikunjaComment> =
+                self.execute(Method::GET, &path, "task comments").await?;
+
+            let mut fetched_new = 0usize;
+            for comment in comments {
+                if !seen_comment_ids.insert(comment.id) {
+                    continue;
+                }
+                fetched_new += 1;
+                let Some(body) = html_to_text(&comment.comment) else {
+                    continue;
+                };
+                if !contains_workpad_marker(&body) {
+                    continue;
+                }
+                let updated_at = parse_datetime("updated", comment.updated.as_deref())?;
+                let candidate = WorkpadComment {
+                    id: comment.id.to_string(),
+                    body,
+                    updated_at,
+                };
+                if latest
+                    .as_ref()
+                    .is_none_or(|existing| candidate.updated_at > existing.updated_at)
+                {
+                    latest = Some(candidate);
+                }
             }
-            let updated_at = parse_datetime("updated", comment.updated.as_deref())?;
-            let candidate = WorkpadComment {
-                id: comment.id.to_string(),
-                body,
-                updated_at,
-            };
-            if latest
-                .as_ref()
-                .is_none_or(|existing| candidate.updated_at > existing.updated_at)
-            {
-                latest = Some(candidate);
+
+            if fetched_new == 0 {
+                return Ok(latest);
             }
+            page += 1;
         }
-        Ok(latest)
     }
 
     async fn project_tasks(&self) -> Result<Vec<VikunjaTask>, VikunjaError> {
@@ -330,9 +352,7 @@ impl VikunjaClient {
                 "/api/v1/projects/{}/tasks?page={page}&per_page={}",
                 self.config.project_id, self.config.page_size
             );
-            let batch: Vec<VikunjaTask> = self
-                .execute(Method::GET, &path, "project tasks")
-                .await?;
+            let batch: Vec<VikunjaTask> = self.execute(Method::GET, &path, "project tasks").await?;
             let mut fetched_new = 0usize;
             for task in batch {
                 if seen_task_ids.insert(task.id) {
@@ -480,18 +500,42 @@ fn normalize_required_string(field_name: &str, value: &str) -> Result<String, Vi
     }
 }
 
+/// Vikunja has no workflow statuses — a task is either open (`Todo`) or done
+/// (`Done`) — so these are the only two state names the tracker can ever
+/// report. A workflow that carries Linear/Jira state names (`In Progress`,
+/// `Backlog`, ...) matches nothing, and `tasks_by_state_names` would then
+/// silently return zero candidates: the orchestrator would poll forever and
+/// never dispatch, with no error to explain why. Reject that at construction
+/// instead of failing open.
 fn normalize_required_state_names(
     field_name: &str,
     values: &[String],
 ) -> Result<Vec<String>, VikunjaError> {
     let normalized = normalize_strings(values);
     if normalized.is_empty() {
-        Err(VikunjaError::InvalidConfiguration(format!(
+        return Err(VikunjaError::InvalidConfiguration(format!(
             "{field_name} must contain at least one state name"
-        )))
-    } else {
-        Ok(normalized)
+        )));
     }
+
+    let unsupported = normalized
+        .iter()
+        .filter(|name| {
+            !name.eq_ignore_ascii_case(super::normalize::STATE_TODO)
+                && !name.eq_ignore_ascii_case(super::normalize::STATE_DONE)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(VikunjaError::InvalidConfiguration(format!(
+            "{field_name} only supports the Vikunja state names `{}` and `{}`, got `{}`",
+            super::normalize::STATE_TODO,
+            super::normalize::STATE_DONE,
+            unsupported.join("`, `")
+        )));
+    }
+
+    Ok(normalized)
 }
 
 fn normalize_strings<S>(values: &[S]) -> Vec<String>
@@ -573,6 +617,25 @@ mod tests {
             "intro\n  ## Agent Harness Workpad\nbody"
         ));
         assert!(!contains_workpad_marker("## Some other heading"));
+    }
+
+    #[test]
+    fn state_names_must_be_the_two_vikunja_states() {
+        // A workflow carrying Linear/Jira state names must fail loudly rather
+        // than matching nothing and starving the scheduler.
+        let mut linear_style = config();
+        linear_style.active_states = vec!["In Progress".to_string()];
+        assert!(VikunjaClient::new(linear_style).is_err());
+
+        let mut bad_terminal = config();
+        bad_terminal.terminal_states = vec!["Done".to_string(), "Closed".to_string()];
+        assert!(VikunjaClient::new(bad_terminal).is_err());
+
+        // Casing is normalized by the state filter, so it stays accepted.
+        let mut lowercase = config();
+        lowercase.active_states = vec!["todo".to_string()];
+        lowercase.terminal_states = vec!["done".to_string()];
+        assert!(VikunjaClient::new(lowercase).is_ok());
     }
 
     #[test]

@@ -148,6 +148,15 @@ advertised capabilities like any other transport.
   `onStale`; a fresh event that advances the frontier clears the stale flag
   (`onRecovered`). Stale detection is deterministic and testable without real
   timers via `StreamReplayBuffer.checkStale(now, staleAfterMs)`.
+- "Advances the frontier" covers both outcomes: an envelope that applies cleanly
+  *and* one far enough ahead to declare a gap. A stream that resumes after an
+  idle window with dropped frames recovers on the gap-declaring envelope, so
+  `onRecovered` fires there too — otherwise the buffer would clear its internal
+  stale mark while consumers stayed pinned on "stale" forever.
+- `seed()` only evicts when it introduces a *new* partition. Advancing an
+  already-tracked partition's frontier does not grow the partition table, so
+  evicting there would discard an unrelated live partition's cursor and its
+  buffered out-of-order frames.
 
 ## Test coverage
 

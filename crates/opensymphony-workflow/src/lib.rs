@@ -404,10 +404,7 @@ tracker:
             .resolve(Path::new("/repo"), &env)
             .expect("workflow should resolve");
 
-        assert!(matches!(
-            resolved.config.tracker.kind,
-            TrackerKind::Vikunja
-        ));
+        assert!(matches!(resolved.config.tracker.kind, TrackerKind::Vikunja));
         assert_eq!(
             resolved.config.tracker.endpoint,
             "https://vikunja.example.com"

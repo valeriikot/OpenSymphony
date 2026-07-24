@@ -282,6 +282,15 @@ pub trait WorkerBackend {
         request: WorkerStartRequest,
     ) -> Result<WorkerLaunch, Self::Error>;
 
+    /// Start a batch of workers.
+    ///
+    /// Implementations **must** return exactly one result per request, in
+    /// request order. The scheduler has already claimed each candidate and
+    /// removed it from its execution map by the time this is called, so it
+    /// pairs requests to results positionally in order to resolve every claimed
+    /// execution. A missing result is treated as a launch failure rather than
+    /// dropped, but a reordered result vector would attribute one issue's
+    /// outcome to another.
     async fn start_workers(
         &mut self,
         requests: Vec<WorkerStartRequest>,
@@ -1513,7 +1522,10 @@ where
             // dispatch batch: candidates already claimed into
             // `pending_launches` were removed from `executions` and would be
             // dropped (losing their retry counters) if we propagated here.
-            let workspace = match self.workspace.ensure_workspace(&normalized, observed_at).await
+            let workspace = match self
+                .workspace
+                .ensure_workspace(&normalized, observed_at)
+                .await
             {
                 Ok(workspace) => workspace,
                 Err(error) => {
@@ -1598,9 +1610,32 @@ where
             )
             .await;
 
+        // `start_workers` is contracted to return exactly one result per
+        // request, in request order. A short result vector would otherwise let
+        // `zip` silently drop the tail of `pending_launches` — and those
+        // candidates were already removed from `executions` and claimed, so
+        // dropping them strands the issue: its retry counters are lost and the
+        // run is never resolved. Map each launch to an optional result so a
+        // missing one becomes an explicit launch failure instead.
+        if start_results.len() != pending_launches.len() {
+            warn!(
+                requested = pending_launches.len(),
+                returned = start_results.len(),
+                "worker backend returned a mismatched launch result count"
+            );
+        }
+        let mut start_results = start_results.into_iter().map(Some).collect::<Vec<_>>();
+        start_results.resize_with(pending_launches.len(), || None);
+
         for ((issue_id, mut execution, claimed_run, start_request), result) in
             pending_launches.into_iter().zip(start_results.into_iter())
         {
+            let result = match result {
+                Some(result) => result.map_err(|error| error.to_string()),
+                None => {
+                    Err("worker backend returned no launch result for this request".to_string())
+                }
+            };
             match result {
                 Ok(launch) => {
                     execution = execution.start_running(
@@ -1835,22 +1870,22 @@ where
         }
         if let Some(run) = execution.current_run().cloned()
             && let Some(abort_reason) = abort_reason
+            && let Err(error) = self.abort_worker(&run.worker_id, abort_reason).await
         {
-            if let Err(error) = self.abort_worker(&run.worker_id, abort_reason).await {
-                self.insert_execution(issue_id, execution);
-                return Err(error);
-            }
+            self.insert_execution(issue_id, execution);
+            return Err(error);
         }
         if execution.status() != SchedulerStatus::Released {
             execution = execution.release(observed_at, reason, None)?;
         }
-        if cleanup_terminal && let Some(workspace) = execution.workspace().cloned() {
-            if let Err(error) = self.workspace.cleanup_workspace(&workspace, true).await {
-                self.insert_execution(issue_id, execution);
-                return Err(SchedulerError::Workspace {
-                    detail: error.to_string(),
-                });
-            }
+        if cleanup_terminal
+            && let Some(workspace) = execution.workspace().cloned()
+            && let Err(error) = self.workspace.cleanup_workspace(&workspace, true).await
+        {
+            self.insert_execution(issue_id, execution);
+            return Err(SchedulerError::Workspace {
+                detail: error.to_string(),
+            });
         }
         self.insert_execution(issue_id, execution);
         Ok(())

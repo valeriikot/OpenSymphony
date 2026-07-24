@@ -904,6 +904,26 @@ impl IssueConversationManifest {
             diagnostics.and_then(|diagnostics| diagnostics.websocket_query_param_name.clone());
     }
 
+    /// Wall-clock seconds this conversation has been alive, measured from
+    /// creation to the most recent observed activity.
+    ///
+    /// The snapshot layer independently derives a runtime from run start/finish
+    /// timestamps and takes the larger of the two, so this value is a floor
+    /// rather than the authority. Timestamps come off the wire and are not
+    /// guaranteed monotonic, so a negative span clamps to zero.
+    fn runtime_seconds(&self) -> u64 {
+        let latest_activity = self
+            .last_event_at
+            .filter(|last_event_at| *last_event_at > self.updated_at)
+            .unwrap_or(self.updated_at);
+        u64::try_from(
+            latest_activity
+                .signed_duration_since(self.created_at)
+                .num_seconds(),
+        )
+        .unwrap_or(0)
+    }
+
     fn to_domain_metadata(&self, stream_state: RuntimeStreamState) -> ConversationMetadata {
         ConversationMetadata {
             conversation_id: self.conversation_id.clone(),
@@ -923,8 +943,10 @@ impl IssueConversationManifest {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             cache_read_tokens: self.cache_read_tokens,
-            total_tokens: self.input_tokens + self.output_tokens,
-            runtime_seconds: 0, // TODO: track runtime
+            // Saturate rather than wrap: these counters come from server-reported
+            // completion payloads, so a bogus value must not panic the run.
+            total_tokens: self.input_tokens.saturating_add(self.output_tokens),
+            runtime_seconds: self.runtime_seconds(),
             next_activity_sequence: 0,
         }
     }
@@ -1057,10 +1079,13 @@ impl ActiveSession {
             if let KnownEvent::LlmCompletionLog(llm_event) = KnownEvent::from_envelope(event) {
                 llm_events_found += 1;
                 if let Some((input, output)) = llm_event.token_usage() {
-                    self.manifest.input_tokens += input;
-                    self.manifest.output_tokens += output;
-                    tokens_added.0 += input;
-                    tokens_added.1 += output;
+                    // Counts come from the server's completion payload; saturate
+                    // so an implausible report cannot overflow-panic the run.
+                    self.manifest.input_tokens = self.manifest.input_tokens.saturating_add(input);
+                    self.manifest.output_tokens =
+                        self.manifest.output_tokens.saturating_add(output);
+                    tokens_added.0 = tokens_added.0.saturating_add(input);
+                    tokens_added.1 = tokens_added.1.saturating_add(output);
                     tracing::debug!(
                         input_tokens = input,
                         output_tokens = output,

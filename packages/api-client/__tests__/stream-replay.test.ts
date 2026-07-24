@@ -268,6 +268,40 @@ describe("orderedEvents", () => {
     expect(recovered[0].seq).toBe(2);
   });
 
+  it("reports recovery when the recovering envelope declares a gap", async () => {
+    // A stream can resume after an idle window with dropped frames, so the
+    // first envelope back declares a gap rather than applying cleanly. That
+    // still clears the buffer's stale mark, so onRecovered must fire.
+    //
+    // now() is called for: touchActivity(seq1), checkStale(seq1),
+    // touchActivity(seq999) [clears stale], recoveredAt, checkStale(seq999).
+    const ticks = [1000, 61_000, 61_000, 65_000, 65_000];
+    let tickIndex = 0;
+    const now = () => ticks[Math.min(tickIndex++, ticks.length - 1)];
+
+    const staleAts: number[] = [];
+    const recovered: StreamStaleInfo[] = [];
+    const gaps: StreamGap[] = [];
+    const source = fromArray([runEnvelope(1), runEnvelope(999)]);
+
+    for await (const env of orderedEvents(source, {
+      staleAfterMs: 30_000,
+      maxPendingPerPartition: 4,
+      now,
+      onStale: (info) => staleAts.push(info.staleAt),
+      onRecovered: (info) => recovered.push(info),
+      onGap: (gap) => gaps.push(gap),
+    })) {
+      void env;
+    }
+
+    expect(staleAts).toEqual([61_000]);
+    expect(gaps).toHaveLength(1);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].staleAt).toBe(61_000);
+    expect(recovered[0].lastSequence).toBe(999);
+  });
+
   it("evicts the oldest inactive partition when exceeding maxPartitions", () => {
     const buffer = new StreamReplayBuffer({ maxPartitions: 2 });
     buffer.apply(runEnvelope(1, "run:run-1"));
@@ -279,6 +313,21 @@ describe("orderedEvents", () => {
     expect(buffer.lastSequence("run:run-1")).toBeUndefined();
     expect(buffer.lastSequence("run:run-2")).toBe(1);
     expect(buffer.lastSequence("run:run-3")).toBe(1);
+  });
+
+  it("re-seeding a tracked partition at capacity does not evict another", () => {
+    // seed() must only evict when it introduces a NEW partition. Advancing an
+    // already-tracked partition's frontier leaves `lastApplied` the same size,
+    // so evicting would silently discard an unrelated live partition.
+    const buffer = new StreamReplayBuffer({ maxPartitions: 2 });
+    buffer.apply(runEnvelope(1, "run:run-1"));
+    buffer.apply(runEnvelope(1, "run:run-2"));
+
+    buffer.seed("run:run-2", 50);
+
+    expect(buffer.lastSequence("run:run-2")).toBe(50);
+    expect(buffer.lastSequence("run:run-1")).toBe(1);
+    expect(buffer.partitions()).toHaveLength(2);
   });
 
   it("dropPartition retires a partition to bound memory", () => {
