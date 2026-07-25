@@ -4,8 +4,24 @@
 //! matching markers or rendering into prompts.
 
 const BLOCK_TAGS: &[&str] = &[
-    "br", "p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre",
-    "tr", "table", "thead", "tbody",
+    "br",
+    "p",
+    "div",
+    "li",
+    "ul",
+    "ol",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "blockquote",
+    "pre",
+    "tr",
+    "table",
+    "thead",
+    "tbody",
 ];
 
 const INLINE_TAGS: &[&str] = &[
@@ -105,7 +121,10 @@ mod tests {
             html_to_text("blocked_on: <none>\nuse Vec<String>"),
             Some("blocked_on: <none>\nuse Vec<String>".to_string())
         );
-        assert_eq!(html_to_text("a < b and c > d"), Some("a < b and c > d".to_string()));
+        assert_eq!(
+            html_to_text("a < b and c > d"),
+            Some("a < b and c > d".to_string())
+        );
     }
 
     #[test]

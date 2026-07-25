@@ -100,7 +100,11 @@ export class StreamReplayBuffer {
   seed(partition: string, sequence: number): void {
     const current = this.lastApplied.get(partition);
     if (current === undefined || sequence > current) {
-      this.maybeEvict(partition);
+      // Only evict when this seed introduces a *new* partition. Advancing the
+      // frontier of an already-tracked partition does not grow `lastApplied`,
+      // so evicting here would discard an unrelated live partition's state
+      // (and its pending frames) for no reason. `apply()` guards the same way.
+      if (current === undefined) this.maybeEvict(partition);
       this.lastApplied.set(partition, sequence);
     }
   }
@@ -402,9 +406,16 @@ export async function* orderedEvents(
     const wasStale = staleAfterMs > 0 && buffer.isStale(partition);
     const staleAt = wasStale ? buffer.staleSince(partition) ?? now() : 0;
 
+    // A partition recovers on the first envelope that advances the frontier,
+    // whether it arrived cleanly (`applied`) or declared a gap. Both paths call
+    // `touchActivity`, which clears the buffer's internal stale mark, so both
+    // must report `onRecovered` — otherwise a stream that resumes with dropped
+    // frames clears stale state silently and consumers stay pinned on "stale".
+    let reportedRecovery = false;
     for (const event of buffer.apply(envelope)) {
-      if (event.kind === "applied") {
-        if (wasStale) {
+      if (event.kind === "applied" || event.kind === "gap") {
+        if (wasStale && !reportedRecovery) {
+          reportedRecovery = true;
           const recoveredAt = now();
           options.onRecovered?.({
             partition,
@@ -413,9 +424,7 @@ export async function* orderedEvents(
             idleMs: recoveredAt - staleAt,
           });
         }
-        yield event.envelope;
-      } else if (event.kind === "gap") {
-        // The envelope that triggered the gap is applied as part of the gap;
+        // For a gap, the triggering envelope is applied as part of the gap;
         // emit it so the consumer sees the post-gap frontier advance.
         yield event.envelope;
       }

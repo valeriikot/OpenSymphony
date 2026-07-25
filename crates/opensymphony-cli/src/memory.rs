@@ -1689,10 +1689,14 @@ fn authorize_memory_request(
             let admin_token = non_empty_str(auth.admin_token.as_deref());
             match (read_token, admin_token) {
                 (Some(read_token), Some(admin_token)) => {
-                    bearer == Some(read_token) || bearer == Some(admin_token)
+                    // Evaluate both so a read-token match does not short-circuit
+                    // the admin-token comparison.
+                    let read_ok = secret_matches(bearer, read_token);
+                    let admin_ok = secret_matches(bearer, admin_token);
+                    read_ok || admin_ok
                 }
-                (Some(read_token), None) => bearer == Some(read_token),
-                (None, Some(admin_token)) => bearer == Some(admin_token),
+                (Some(read_token), None) => secret_matches(bearer, read_token),
+                (None, Some(admin_token)) => secret_matches(bearer, admin_token),
                 (None, None) => true,
             }
         }
@@ -1708,7 +1712,7 @@ fn authorize_memory_request(
                     })),
                 ));
             };
-            bearer == Some(admin_token)
+            secret_matches(bearer, admin_token)
         }
     };
     if authorized {
@@ -1728,6 +1732,30 @@ fn authorize_memory_request(
 
 fn non_empty_str(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Compares a presented bearer token against a configured secret without
+/// leaking the length of the matching prefix through timing. `str`/`String`
+/// equality short-circuits on the first differing byte, which lets a caller
+/// that can time responses recover a token byte by byte. The memory server
+/// binds to localhost, but it accepts requests from any local process, so the
+/// admin token still deserves a constant-time check.
+fn secret_matches(presented: Option<&str>, expected: &str) -> bool {
+    let Some(presented) = presented else {
+        return false;
+    };
+    let presented = presented.as_bytes();
+    let expected = expected.as_bytes();
+    // Fold the length comparison into the accumulator so the loop always runs
+    // over the expected token and never returns early on a length mismatch.
+    let mut difference = (presented.len() ^ expected.len()) as u8;
+    for (index, expected_byte) in expected.iter().enumerate() {
+        // Index defensively: a shorter presented token contributes a constant
+        // instead of shortening the loop.
+        let presented_byte = presented.get(index).copied().unwrap_or(0);
+        difference |= presented_byte ^ expected_byte;
+    }
+    difference == 0
 }
 
 fn origin_is_localhost(origin: &str) -> bool {

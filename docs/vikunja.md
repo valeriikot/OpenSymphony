@@ -23,8 +23,13 @@ tracker:
   in `https://vikunja.example.com/projects/7`), not the project title.
 - Vikunja has no workflow statuses — a task is either open or done — so the
   tracker exposes exactly two state names: `Todo` and `Done`. Configure
-  `active_states: [Todo]` and `terminal_states: [Done]`; other names never
-  match any task.
+  `active_states: [Todo]` and `terminal_states: [Done]`.
+- `active_states` and `terminal_states` accept **only** `Todo` and `Done`
+  (case-insensitive). Any other name — for example a Linear/Jira value such as
+  `In Progress` or `Backlog` carried over from another workflow — is rejected
+  when the client is constructed. This is deliberate: such a name matches no
+  task, so the scheduler would otherwise poll forever and never dispatch, with
+  nothing in the logs to explain why.
 
 ## 2. Credentials
 
@@ -43,7 +48,14 @@ The internal `opensymphony_vikunja` module talks to the Vikunja REST API v1:
 - `GET /api/v1/projects/{id}/tasks` for candidate and terminal reads (paged
   with `page`/`per_page`)
 - `GET /api/v1/tasks/{id}` for state refresh
-- `GET /api/v1/tasks/{id}/comments` for Agent Harness Workpad comments
+- `GET /api/v1/tasks/{id}/comments` for Agent Harness Workpad comments (also
+  paged with `page`/`per_page`)
+
+Both list reads page until a request returns no task or comment id that has
+not already been seen. A short page does **not** terminate paging: Vikunja
+clamps `per_page` to the server's `service.maxitemsperpage` setting, so a
+truncated page is normal. Deduplicating by id also makes the loop terminate
+against a server that replays the same page.
 
 Payloads normalize into the same tracker-neutral domain models Linear and
 Jira use:

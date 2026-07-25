@@ -618,10 +618,17 @@ impl ConversationMetadata {
         }
     }
 
+    // Token counters accumulate values parsed straight out of server-reported
+    // completion payloads, and runtime seconds accumulate from wire timestamps.
+    // Neither is validated upstream, so these use saturating arithmetic: a
+    // nonsensical report should peg the counter, not panic the orchestrator on a
+    // debug overflow check.
     pub fn add_tokens(&mut self, input: u64, output: u64) {
-        self.input_tokens += input;
-        self.output_tokens += output;
-        self.total_tokens += input + output;
+        self.input_tokens = self.input_tokens.saturating_add(input);
+        self.output_tokens = self.output_tokens.saturating_add(output);
+        self.total_tokens = self
+            .total_tokens
+            .saturating_add(input.saturating_add(output));
     }
 
     pub fn set_token_usage(&mut self, input: u64, output: u64, cache_read: u64, total: u64) {
@@ -635,12 +642,12 @@ impl ConversationMetadata {
         if self.total_tokens > 0 {
             self.total_tokens
         } else {
-            self.input_tokens + self.output_tokens
+            self.input_tokens.saturating_add(self.output_tokens)
         }
     }
 
     pub fn add_runtime_seconds(&mut self, seconds: u64) {
-        self.runtime_seconds += seconds;
+        self.runtime_seconds = self.runtime_seconds.saturating_add(seconds);
     }
 }
 

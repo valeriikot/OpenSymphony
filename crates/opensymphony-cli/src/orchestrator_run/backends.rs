@@ -28,9 +28,6 @@ use crate::opensymphony_jira::{
     JiraClient, JiraConfig, JiraError, WorkpadComment as JiraWorkpadComment,
 };
 use crate::opensymphony_linear::{LinearClient, LinearConfig, LinearError, WorkpadComment};
-use crate::opensymphony_vikunja::{
-    VikunjaClient, VikunjaConfig, VikunjaError, WorkpadComment as VikunjaWorkpadComment,
-};
 use crate::opensymphony_notify::{IssueCompletionNotification, Notifier};
 use crate::opensymphony_openhands::{
     ConversationMoveOutcome, ConversationStoreKind, IssueConversationManifest, IssueSessionError,
@@ -44,6 +41,9 @@ use crate::opensymphony_orchestrator::{
     RecoveredRun, RecoveryRecord, TrackerBackend, WorkerAbortReason, WorkerBackend,
     WorkerInterruptAcknowledgement, WorkerLaunch, WorkerStartRequest, WorkerUpdate,
     WorkspaceBackend,
+};
+use crate::opensymphony_vikunja::{
+    VikunjaClient, VikunjaConfig, VikunjaError, WorkpadComment as VikunjaWorkpadComment,
 };
 use crate::opensymphony_workflow::{
     Environment, ProcessEnvironment, ResolvedWorkflow, TrackerKind,

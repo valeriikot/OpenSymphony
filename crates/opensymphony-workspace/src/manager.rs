@@ -1341,10 +1341,7 @@ async fn write_file_atomically(path: &Path, payload: &[u8]) -> io::Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "manifest".to_string());
-    let temp_path = path.with_file_name(format!(
-        ".{file_name}.tmp-{}",
-        std::process::id()
-    ));
+    let temp_path = path.with_file_name(format!(".{file_name}.tmp-{}", std::process::id()));
     fs::write(&temp_path, payload).await?;
     match fs::rename(&temp_path, path).await {
         Ok(()) => Ok(()),

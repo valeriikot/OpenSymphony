@@ -233,7 +233,10 @@ mod tests {
             "2026-03-22T00:00:00Z",
             vec![blocker(
                 "OSYM-1",
-                state("Done", TrackerIssueStateKind::Unknown("unknown".to_string())),
+                state(
+                    "Done",
+                    TrackerIssueStateKind::Unknown("unknown".to_string()),
+                ),
             )],
             Vec::new(),
         );

@@ -742,23 +742,31 @@ fn replace_path_token(value: &str, needle: &str, replacement: &str) -> String {
     }
     let mut result = String::with_capacity(value.len());
     let mut remaining = value;
+    // The left-boundary test needs the character immediately preceding the
+    // match in the *original* string. `remaining` is re-sliced past each
+    // previous match, so a match at `index == 0` on a later iteration has an
+    // empty prefix even though real text precedes it. Carry the last consumed
+    // character across iterations instead of inferring start-of-string.
+    let mut previous_character: Option<char> = None;
     while let Some(index) = remaining.find(needle) {
-        result.push_str(&remaining[..index]);
         let before = &remaining[..index];
         let after = &remaining[index + needle.len()..];
-        if is_path_token_left_boundary(before) && is_path_token_right_boundary(after) {
+        result.push_str(before);
+        let left_context = before.chars().next_back().or(previous_character);
+        if is_path_token_left_boundary(left_context) && is_path_token_right_boundary(after) {
             result.push_str(replacement);
         } else {
             result.push_str(needle);
         }
+        previous_character = needle.chars().next_back().or(left_context);
         remaining = after;
     }
     result.push_str(remaining);
     result
 }
 
-fn is_path_token_left_boundary(before: &str) -> bool {
-    match before.chars().next_back() {
+fn is_path_token_left_boundary(before: Option<char>) -> bool {
+    match before {
         None => true,
         Some('/') | Some('\\') => true,
         Some(character) => {
@@ -1364,5 +1372,38 @@ fn graph_snapshot_metrics(
             .filter(|node| node.kind == MemoryGraphNodeKind::Concept)
             .map(|node| node.warning_count)
             .sum(),
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::replace_path_token;
+
+    #[test]
+    fn boundary_check_uses_original_preceding_character() {
+        // The first `/a` is preceded by an alphanumeric, so it is part of a
+        // longer token and must survive. The scan then continues from a slice
+        // whose start is mid-string: without carrying the preceding character
+        // across iterations, the second `/a` looks like start-of-string and
+        // gets redacted even though `a` precedes it there too.
+        assert_eq!(replace_path_token("b/a/a", "/a", "[X]"), "b/a/a");
+        // A genuine boundary still redacts, including repeated occurrences.
+        assert_eq!(replace_path_token("/a /a", "/a", "[X]"), "[X] [X]");
+    }
+
+    #[test]
+    fn right_boundary_still_rejects_longer_tokens() {
+        // Regression guard for the documented `[redacted-local-path]bed` case:
+        // a needle followed by more word characters is a different path, so it
+        // must not be redacted.
+        assert_eq!(replace_path_token("/rootbed", "/root", "[X]"), "/rootbed");
+        // A separator after the needle is a real boundary, so a child path of
+        // the redacted root still redacts its root prefix.
+        assert_eq!(replace_path_token("/root/bed", "/root", "[X]"), "[X]/bed");
+    }
+
+    #[test]
+    fn empty_needle_is_a_no_op() {
+        assert_eq!(replace_path_token("value", "", "[X]"), "value");
     }
 }
